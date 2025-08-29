@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>INPI Pi-Pyramid Game</title>
   <link rel="stylesheet" href="./styles.css" />
-  <script type="module" src="./app.js"></script>
+  <!-- Tipp #1: Cache-Busting via Version-Param -->
+  <script type="module" src="./app.js?v=1"></script>
 </head>
 <body>
   <header>
@@ -18,8 +19,8 @@
     <ul>
       <li>Ein Run kostet <b>2000 INPI</b> oder <b>1.00 USDC</b>.</li>
       <li>Block rollt 100 Reihen durch die Pi-Pyramide.</li>
-      <li>Geringe Grundchance; zur vollen Stunde Community-Boost.</li>
-      <li>Jede <b>4. Runde</b> ist <b>gratis</b> (pro Wallet, nach 3 Nieten).</li>
+      <li><b>Community-Boost</b> zur vollen Stunde (Europe/Berlin).</li>
+      <li>Jede <b>4. Runde</b> ist <b>gratis</b> (nach 3 Nieten, pro Wallet).</li>
       <li>Gewinne werden unter deiner Wallet vermerkt (Namespace/Claims).</li>
     </ul>
   </section>
@@ -34,6 +35,7 @@
     </div>
     <button id="btnPlay">▶️ Play</button>
     <div id="hint"></div>
+    <div id="boostTimer" style="margin-top:.5rem;opacity:.8;">–</div>
   </section>
 
   <section class="panel">
@@ -42,8 +44,10 @@
   </section>
 
   <section class="panel">
-    <h2>Beweis</h2>
+    <h2>Beweis & Links</h2>
     <pre id="proof">–</pre>
+    <!-- Tipp #2: Direktlink zum Solana Explorer -->
+    <div id="links"></div>
   </section>
 
   <footer>

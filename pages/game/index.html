@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>INPI Pi-Pyramid Game</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <header>
+    <h1>🪙 INPI Pi-Pyramid</h1>
+    <button id="btnConnect">Mit Phantom verbinden</button>
+  </header>
+
+  <section class="panel">
+    <h2>Spielregeln</h2>
+    <ul>
+      <li>Ein Run kostet <b>2000 INPI</b> oder <b>1.00 USDC</b>.</li>
+      <li>Block rollt 100 Reihen durch die Pi-Pyramide.</li>
+      <li>Geringe Grundchance; zur vollen Stunde Community-Boost.</li>
+      <li>Jede <b>4. Runde</b> ist <b>gratis</b> (pro Wallet, nach 3 Nieten).</li>
+      <li>Gewinne werden unter deiner Wallet vermerkt (Namespace/Claims).</li>
+    </ul>
+  </section>
+
+  <section class="panel">
+    <h2>Payment</h2>
+    <label><input type="radio" name="pay" value="INPI" checked /> INPI (2000)</label>
+    <label><input type="radio" name="pay" value="USDC" /> USDC (<span id="usdcCost">–</span>)</label>
+    <div class="balances">
+      <div>INPI: <span id="balInpi">–</span></div>
+      <div>USDC: <span id="balUsdc">–</span></div>
+    </div>
+    <button id="btnPlay">▶️ Play</button>
+    <div id="hint"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Ergebnis</h2>
+    <pre id="result">–</pre>
+  </section>
+
+  <section class="panel">
+    <h2>Beweis</h2>
+    <pre id="proof">–</pre>
+  </section>
+
+  <footer>
+    <small>RNG: Solana Blockhash • Rarities aus <code>data/pi_phi_table.json</code></small>
+  </footer>
+</body>
+</html>

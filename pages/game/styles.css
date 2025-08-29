@@ -30,9 +30,8 @@ pre { background: #0b0b0b0d; padding:.75rem; border-radius:8px; overflow:auto; }
   mix-blend-mode: overlay;
 }
 .pixelate {
-  /* einfacher Retro-Look */
   image-rendering: pixelated;
-  transform: scale(1.0001); /* Safari-Workaround für pixelated */
+  transform: scale(1.0001);
 }
 
 .metabox {

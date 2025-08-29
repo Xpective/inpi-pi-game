@@ -1,39 +1,34 @@
 // Frontend mit Phantom, API, Boost-Countdown, Explorer-Link,
-// NFT-Preview (Pinata) + Profi-Extras: Thumbnail-Bar, Random-Preview, Pixelate
+// NFT-Preview (Pinata) + Thumbs mit Pager (0–399) + Pixelate
 
 import { runPiRoll } from "./three-scene.js?v=1";
 
 // @ts-ignore
-import {
-  Connection, PublicKey, Transaction
-} from "https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.3/lib/index.iife.min.js";
+import { Connection, PublicKey, Transaction } from "https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.3/lib/index.iife.min.js";
 // @ts-ignore
-import {
-  getAssociatedTokenAddress, createAssociatedTokenAccountInstruction,
-  createTransferCheckedInstruction
-} from "https://cdn.jsdelivr.net/npm/@solana/spl-token@0.4.8/index.iife.min.js";
+import { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, createTransferCheckedInstruction } from "https://cdn.jsdelivr.net/npm/@solana/spl-token@0.4.8/index.iife.min.js";
 
 const CFG = {
   RPCS: ["https://api.mainnet-beta.solana.com"],
   INPI_MINT: "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
   USDC_MINT: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-  TREASURY_OWNER: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp", // INPI 80%
-  INCINERATOR_OWNER: "1nc1nerator11111111111111111111111111111111",  // INPI 20% Burn
-  LP_OWNER: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",          // USDC → LP
+  TREASURY_OWNER: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
+  INCINERATOR_OWNER: "1nc1nerator11111111111111111111111111111111",
+  LP_OWNER: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
   COST_INPI: 2000,
   COST_USDC: 1,
   API_BASE: "https://api.inpinity.online/game",
   INPI_DECIMALS: 9,
   USDC_DECIMALS: 6,
 
-  // Pinata / IPFS (0–100 JSON: image + animation_url=mp4)
+  // Pinata / IPFS (0–399 JSON: image + animation_url=mp4)
   PINATA_CID: "bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu",
   GATEWAYS: [
     "https://gateway.pinata.cloud/ipfs/",
     "https://cloudflare-ipfs.com/ipfs/",
     "https://ipfs.io/ipfs/"
   ],
-  IPFS_TIMEOUT_MS: 4500   // schneller Fallback
+  IPFS_TIMEOUT_MS: 4500
 };
 
 // ---- DOM ----
@@ -62,6 +57,9 @@ const nftImage      = $("#nftImage");
 const gridOverlay   = $("#gridOverlay");
 const metaBox       = $("#meta");
 const thumbBar      = $("#thumbBar");
+const pageInfo      = $("#pageInfo");
+const prevPage      = $("#prevPage");
+const nextPage      = $("#nextPage");
 
 // Kostenanzeige
 spanCost.textContent = Number(CFG.COST_USDC).toFixed(2);
@@ -71,7 +69,7 @@ let connection = null;
 let lastSig = null;
 
 // kleines Frontend-Cache
-const META_CACHE = new Map(); // id -> json
+const META_CACHE = new Map();  // id -> json
 const THUMB_CACHE = new Map(); // id -> url
 
 // ---- Helpers ----
@@ -97,11 +95,11 @@ async function refreshBalances() {
   spanUsdc.textContent = usdc.ui.toFixed(4);
 }
 
-// ---- Europe/Berlin Zeit & Boost ----
+// ---- Europe/Berlin Boost ----
 function nowBerlin() {
   const d = new Date();
   const m = d.getUTCMonth();
-  const offset = (m>=2 && m<=9) ? 2 : 1; // grobe Sommerzeit
+  const offset = (m>=2 && m<=9) ? 2 : 1;
   return new Date(d.getTime() + offset*3600*1000);
 }
 function secsToNextFullHour() {
@@ -118,23 +116,14 @@ function formatMMSS(total) {
 }
 function updateBoostUI() {
   const secs = secsToNextFullHour();
-  if (secs === 0) {
-    hintEl.textContent = "Community-Boost aktiv: +1.00% Chance";
-    boostTimerEl.textContent = "Jetzt!";
-  } else {
-    hintEl.textContent = "Tipp: Zur vollen Stunde +1.00% Boost";
-    boostTimerEl.textContent = "Nächster Boost in " + formatMMSS(secs);
-  }
+  if (secs === 0) { hintEl.textContent = "Community-Boost aktiv: +1.00% Chance"; boostTimerEl.textContent = "Jetzt!"; }
+  else { hintEl.textContent = "Tipp: Zur vollen Stunde +1.00% Boost"; boostTimerEl.textContent = "Nächster Boost in " + formatMMSS(secs); }
 }
-setInterval(updateBoostUI, 1000);
-updateBoostUI();
+setInterval(updateBoostUI, 1000); updateBoostUI();
 
 // ---- Wallet ----
 btnConnect.onclick = async () => {
-  if (!window?.solana?.isPhantom) {
-    alert("Phantom Wallet nicht gefunden. Bitte Phantom installieren.");
-    return;
-  }
+  if (!window?.solana?.isPhantom) return alert("Phantom Wallet nicht gefunden. Bitte Phantom installieren.");
   const resp = await window.solana.connect();
   wallet = resp;
   btnConnect.textContent = `Verbunden: ${wallet.publicKey.toBase58().slice(0,6)}…`;
@@ -188,7 +177,6 @@ async function buildUsdcTx(payer) {
 
   const info = await conn.getAccountInfo(ataLp);
   if (!info) ix.push(createAssociatedTokenAccountInstruction(payerPk, ataLp, lpOwner, mint));
-
   ix.push(createTransferCheckedInstruction(ataPayer, mint, ataLp, payerPk, Number(amount), decimals));
 
   const tx = new Transaction().add(...ix);
@@ -202,22 +190,17 @@ async function callPlayAPI({txSig=null, mode="PAID"}) {
   const res = await fetch(`${CFG.API_BASE}/play`, {
     method: "POST",
     headers: {"content-type":"application/json"},
-    body: JSON.stringify({
-      wallet: wallet.publicKey.toBase58(),
-      txSig, mode, pay: document.querySelector('input[name="pay"]:checked').value
-    })
+    body: JSON.stringify({ wallet: wallet.publicKey.toBase58(), txSig, mode, pay: document.querySelector('input[name="pay"]:checked').value })
   });
   return await res.json();
 }
 
-// ---- IPFS Utils (mit Fallbacks & Timeout) ----
+// ---- IPFS Utils ----
 function toGatewayUrls(path) {
   const p = path.startsWith("http") ? path : (path.startsWith("ipfs://") ? path.replace("ipfs://","") : path);
   return p.startsWith("http") ? [p] : CFG.GATEWAYS.map(gw => gw + p);
 }
-function timeout(ms) {
-  return new Promise((_, rej) => setTimeout(()=>rej(new Error("timeout")), ms));
-}
+function timeout(ms) { return new Promise((_, rej) => setTimeout(()=>rej(new Error("timeout")), ms)); }
 async function fetchJsonWithFallbacks(path) {
   const urls = toGatewayUrls(path);
   for (const u of urls) {
@@ -237,17 +220,11 @@ async function headOk(url) {
 
 // ---- NFT Preview ----
 function hideMedia() {
-  nftVideo.pause();
-  nftVideo.removeAttribute("src"); nftVideo.removeAttribute("poster");
-  nftVideo.style.display = "none";
-  nftImage.removeAttribute("src");
-  nftImage.style.display = "none";
+  nftVideo.pause(); nftVideo.removeAttribute("src"); nftVideo.removeAttribute("poster"); nftVideo.style.display = "none";
+  nftImage.removeAttribute("src"); nftImage.style.display = "none";
 }
 function setGridOverlay(on) { gridOverlay.style.display = on ? "block" : "none"; }
-function setPixelate(on) {
-  nftImage.classList.toggle("pixelate", on);
-  nftVideo.classList.toggle("pixelate", on);
-}
+function setPixelate(on) { nftImage.classList.toggle("pixelate", on); nftVideo.classList.toggle("pixelate", on); }
 grid16El.onchange = () => setGridOverlay(grid16El.checked);
 pixelateEl.onchange = () => setPixelate(pixelateEl.checked);
 
@@ -267,32 +244,25 @@ async function renderNFTById(id) {
     const anim = meta.animation_url;
     const img  = meta.image;
 
-    // Video bevorzugen, Bild fallback
     if (anim && (anim.endsWith(".mp4") || anim.includes(".mp4"))) {
-      const animPath = anim.startsWith("ipfs://") ? anim.replace("ipfs://","") : anim;
-      const candidates = toGatewayUrls(animPath);
+      const candidates = toGatewayUrls(anim.startsWith("ipfs://") ? anim.replace("ipfs://","") : anim);
       let chosen = null;
-      for (const u of candidates) {
-        if (await headOk(u)) { chosen = u; break; }
-      }
+      for (const u of candidates) { if (await headOk(u)) { chosen = u; break; } }
       nftVideo.src = chosen || candidates[0];
       if (img) {
-        const imgPath = img.startsWith("ipfs://") ? img.replace("ipfs://","") : img;
-        nftVideo.poster = toGatewayUrls(imgPath)[0];
+        const p = img.startsWith("ipfs://") ? img.replace("ipfs://","") : img;
+        nftVideo.poster = toGatewayUrls(p)[0];
       }
       nftVideo.style.display = "block";
-      setGridOverlay(grid16El.checked);
-      setPixelate(pixelateEl.checked);
+      setGridOverlay(grid16El.checked); setPixelate(pixelateEl.checked);
       await nftVideo.play().catch(()=>{});
     } else if (img) {
-      const imgPath = img.startsWith("ipfs://") ? img.replace("ipfs://","") : img;
-      nftImage.src = toGatewayUrls(imgPath)[0];
+      const p = img.startsWith("ipfs://") ? img.replace("ipfs://","") : img;
+      nftImage.src = toGatewayUrls(p)[0];
       nftImage.style.display = "block";
-      setGridOverlay(grid16El.checked);
-      setPixelate(pixelateEl.checked);
+      setGridOverlay(grid16El.checked); setPixelate(pixelateEl.checked);
     } else {
-      metaBox.textContent = "Keine Medienfelder gefunden.";
-      return;
+      metaBox.textContent = "Keine Medienfelder gefunden."; return;
     }
 
     metaBox.textContent = JSON.stringify({ id, name, has_video: !!anim }, null, 2);
@@ -305,67 +275,68 @@ async function renderNFTById(id) {
 // Manuelle Anzeige
 btnShowId.onclick = async () => {
   const v = Number(manualIdInput.value);
-  if (Number.isNaN(v) || v < 0 || v > 100) return alert("Bitte eine ID zwischen 0 und 100 eingeben.");
+  if (Number.isNaN(v) || v < 0 || v > 399) return alert("Bitte eine ID zwischen 0 und 399 eingeben.");
   await renderNFTById(v);
 };
 // Zufällige Anzeige
 btnRandom.onclick = async () => {
-  const v = Math.floor(Math.random()*101);
+  const v = Math.floor(Math.random()*400);
   manualIdInput.value = v;
   await renderNFTById(v);
 };
 
-// Thumbnail-Bar (Lazy)
+// Thumbs + Pager 0..399 (4 Seiten à 100)
+let currentPage = 0;               // 0..3
+const PAGE_SIZE = 100;
+const MAX_ID = 399;
+const PAGES = 4;
+
+function pageRange(p) { const start = p*PAGE_SIZE; const end = Math.min(start+PAGE_SIZE-1, MAX_ID); return {start, end}; }
+function renderPageInfo() { pageInfo.textContent = `Seite ${currentPage+1}/${PAGES}`; }
+function clearThumbs() { thumbBar.innerHTML = ""; }
+
 function thumbEl(id) {
   const div = document.createElement("div");
   div.className = "thumb loading";
   div.dataset.id = String(id);
-  const badge = document.createElement("div");
-  badge.className = "badge";
-  badge.textContent = "#" + id;
-  const img = document.createElement("img");
-  img.alt = "#" + id;
-  div.appendChild(img);
-  div.appendChild(badge);
+  const badge = document.createElement("div"); badge.className = "badge"; badge.textContent = "#" + id;
+  const img = document.createElement("img"); img.alt = "#" + id;
+  div.appendChild(img); div.appendChild(badge);
   div.onclick = () => { manualIdInput.value = id; renderNFTById(id); };
   return { div, img };
 }
-
 async function loadThumb(id) {
   if (THUMB_CACHE.has(id)) return THUMB_CACHE.get(id);
   try {
     const meta = await fetchMetadata(id);
-    let thumbUrl = null;
+    let url = "";
     if (meta.image) {
-      const path = meta.image.startsWith("ipfs://") ? meta.image.replace("ipfs://","") : meta.image;
-      thumbUrl = toGatewayUrls(path)[0];
-    } else if (meta.animation_url) {
-      // kein echtes Thumbnail — nimm Video-Poster wenn vorhanden, sonst nix
-      thumbUrl = ""; // leer => lassen wir Image leer
+      const p = meta.image.startsWith("ipfs://") ? meta.image.replace("ipfs://","") : meta.image;
+      url = toGatewayUrls(p)[0];
     }
-    THUMB_CACHE.set(id, thumbUrl || "");
-    return thumbUrl || "";
-  } catch {
-    THUMB_CACHE.set(id, "");
-    return "";
-  }
+    THUMB_CACHE.set(id, url);
+    return url;
+  } catch { THUMB_CACHE.set(id, ""); return ""; }
 }
-
-btnLoadThumbs.onclick = async () => {
-  if (thumbBar.childElementCount) return; // schon geladen
-  // 0..100
-  const ids = Array.from({length:101}, (_,i)=>i);
+async function renderThumbPage(p) {
+  clearThumbs();
+  const { start, end } = pageRange(p);
+  const ids = Array.from({length: end-start+1}, (_,i)=> start+i);
   for (const id of ids) {
     const {div, img} = thumbEl(id);
     thumbBar.appendChild(div);
-    // lazy load
     requestIdleCallback(async () => {
       const url = await loadThumb(id);
       if (url) img.src = url;
       div.classList.remove("loading");
     }, { timeout: 1200 });
   }
-};
+  renderPageInfo();
+}
+btnLoadThumbs.onclick = async () => { await renderThumbPage(currentPage); };
+prevPage.onclick = async () => { currentPage = (currentPage - 1 + PAGES) % PAGES; await renderThumbPage(currentPage); };
+nextPage.onclick = async () => { currentPage = (currentPage + 1) % PAGES; await renderThumbPage(currentPage); };
+renderPageInfo();
 
 // ---- Play ----
 btnPlay.onclick = async () => {
@@ -376,15 +347,11 @@ btnPlay.onclick = async () => {
 
   try {
     const pay = document.querySelector('input[name="pay"]:checked').value;
-    const tx = (pay === "INPI")
-      ? await buildInpiTx(wallet.publicKey)
-      : await buildUsdcTx(wallet.publicKey);
-
+    const tx = (pay === "INPI") ? await buildInpiTx(wallet.publicKey) : await buildUsdcTx(wallet.publicKey);
     const sig = await window.solana.signAndSendTransaction(tx);
     const sigStr = sig.signature;
     lastSig = sigStr;
 
-    // Confirm, dann API
     const conn = await ensureConn();
     await conn.confirmTransaction(sigStr, "confirmed");
     const apiResp = await callPlayAPI({txSig: sigStr, mode:"PAID"});
@@ -392,18 +359,15 @@ btnPlay.onclick = async () => {
     resultEl.textContent = JSON.stringify(apiResp.result, null, 2);
     proofEl.textContent  = JSON.stringify(apiResp.proof,  null, 2);
 
-    // Explorer-Link
     const a = document.createElement("a");
     a.href = `https://explorer.solana.com/tx/${sigStr}?cluster=mainnet`;
     a.target = "_blank"; a.rel = "noopener";
     a.textContent = "Transaktion im Solana Explorer öffnen";
     linksEl.appendChild(a);
 
-    // 3D-Animation deterministisch
     const fullSeed = sha256(wallet.publicKey.toBase58() + (lastSig || "FREE") + (apiResp?.proof?.blockhash || ""));
-    runPiRoll({ seed: fullSeed, rows: 100, visibleRows: 40, won: !!apiResp?.result?.won, pickedId: apiResp?.result?.id ?? null });
+    runPiRoll({ seed: fullSeed, rows: 400, visibleRows: 400, won: !!apiResp?.result?.won, pickedId: apiResp?.result?.id ?? null });
 
-    // Auto-Preview
     if (autoPreviewEl.checked && apiResp?.result?.won && Number.isInteger(apiResp.result.id)) {
       await renderNFTById(apiResp.result.id);
     }

@@ -218,6 +218,21 @@ btnPlay.onclick = async () => {
     resultEl.textContent = JSON.stringify(apiResp.result, null, 2);
     proofEl.textContent  = JSON.stringify(apiResp.proof,  null, 2);
 
+    
+    // Nach:
+// resultEl.textContent = JSON.stringify(apiResp.result, null, 2);
+// proofEl.textContent  = JSON.stringify(apiResp.proof,  null, 2);
+
+// Neu: deterministische 3D-Animation starten
+const fullSeed = sha256(wallet.publicKey.toBase58() + (lastSig || "FREE") + (apiResp?.proof?.blockhash || ""));
+runPiRoll({
+  seed: fullSeed,                 // deterministisch
+  rows: 100,                      // Simulationszeilen
+  visibleRows: 40,                // Darstellung (Performance)
+  won: !!apiResp?.result?.won,    // visuelles Feedback
+  pickedId: apiResp?.result?.id ?? null  // (optional) – könnte für HUD genutzt werden
+});
+
     // Tipp #2: Explorer-Link direkt anzeigen
     if (sigStr) {
       const a = document.createElement("a");

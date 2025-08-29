@@ -1,5 +1,5 @@
 // Minimal-Frontend (Phantom + Tx + API-Ping + Boost-Countdown + Explorer-Link)
-
+import { runPiRoll } from "./three-scene.js?v=1";
 // @ts-ignore
 import {
   Connection, PublicKey, Transaction

@@ -1,0 +1,7 @@
+:root { font-family: system-ui, Arial; color-scheme: dark light; }
+body { margin: 0 auto; max-width: 900px; padding: 1rem; }
+header { display:flex; gap:1rem; align-items:center; justify-content:space-between; }
+.panel { border:1px solid #ddd; border-radius:12px; padding:1rem; margin:1rem 0; }
+button { padding:.7rem 1rem; border-radius:10px; cursor:pointer; }
+pre { background:#0b0b0b0d; padding:.75rem; border-radius:8px; overflow:auto; }
+.balances { display:flex; gap:1.5rem; margin:.5rem 0; }

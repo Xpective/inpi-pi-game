@@ -8,8 +8,8 @@ routes = [
 
 [[kv_namespaces]]
 binding = "GAME"
-id = "YOUR_GAME_KV_ID"
+id = "c5195e8c3a8f441089a54179b83fadd2"
 
 [[kv_namespaces]]
 binding = "CLAIMS"
-id = "YOUR_CLAIMS_KV_ID"
+id = "139ec0627b02429db4507c14b5a3a1fd"

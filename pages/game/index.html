@@ -6,9 +6,8 @@
   <title>INPI Pi-Pyramid Game</title>
   <link rel="stylesheet" href="./styles.css" />
   <script src="https://cdn.jsdelivr.net/npm/js-sha256@0.11.0/build/sha256.min.js"></script>
-  <!-- Cache-Bust -->
-  <script type="module" src="./app.js?v=4"></script>
-  <script type="module" src="./three-scene.js?v=1"></script>
+  <!-- nur app.js laden; three-scene wird von dort importiert -->
+  <script type="module" src="./app.js?v=5"></script>
 </head>
 <body>
   <header>
@@ -25,11 +24,21 @@
     <h2>Spielregeln</h2>
     <ul>
       <li>Ein Run kostet <b>2000 INPI</b> oder <b>1.00 USDC</b>.</li>
-      <li>Block rollt 100 Reihen durch die Pi-Pyramide.</li>
-      <li><b>Community-Boost</b> zur vollen Stunde (Europe/Berlin).</li>
-      <li>Jede <b>4. Runde</b> ist <b>gratis</b> (nach 3 Nieten, pro Wallet).</li>
+      <li>Der Coin rollt durch die Pi-Pyramide (Visualisierung max. 400 Reihen).</li>
+      <li><b>Community-Boost</b> zur vollen Stunde (Europe/Berlin): +1 %.</li>
+      <li>Jede <b>4. Runde</b> ist <b>gratis</b> (nach 3 Nieten, pro Wallet): +1 %.</li>
       <li>Gewinne werden unter deiner Wallet vermerkt (Namespace/Claims).</li>
     </ul>
+  </section>
+
+  <section class="panel">
+    <h2>Worum geht’s?</h2>
+    <p>
+      Jeder Run ist eine <b>Investition in die Liquidität des INPI-Tokens</b> sowie in die
+      <b>Tokenomics der Inpinity Online Plattform</b>. Gewinne werden als NFTs aus der
+      Kollektion ausgeschüttet. Die Gewinnchance richtet sich nach der <i>Rarität</i>
+      in der JSON, erhöht sich zur vollen Stunde und beim Gratis-Run.
+    </p>
   </section>
 
   <section class="panel">
@@ -53,10 +62,13 @@
       <label class="ml"><input type="checkbox" id="pixelate" /> Pixelate (retro)</label>
     </div>
     <div class="row">
-      <input id="manualId" type="number" min="0" max="100" placeholder="Manuell: ID 0–100" />
+      <input id="manualId" type="number" min="0" max="399" placeholder="Manuell: ID 0–399" />
       <button id="btnShowId">Anzeigen</button>
       <button id="btnRandom">🎲 Zufällige Vorschau</button>
       <button id="btnLoadThumbs">🖼️ Thumbnails laden</button>
+      <span id="pageInfo" class="mono">Seite 1/4</span>
+      <button id="prevPage">◀︎</button>
+      <button id="nextPage">▶︎</button>
     </div>
 
     <div id="visualWrap">
@@ -66,7 +78,6 @@
     </div>
 
     <div id="meta" class="metabox">–</div>
-
     <div id="thumbBar" class="thumbbar"></div>
   </section>
 

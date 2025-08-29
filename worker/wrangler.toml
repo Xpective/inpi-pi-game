@@ -1,0 +1,15 @@
+name = "inpi-pi-game"
+main = "pi-game-worker.js"
+compatibility_date = "2025-08-01"
+
+routes = [
+  { pattern = "api.inpinity.online/game*", zone_name = "inpinity.online" }
+]
+
+[[kv_namespaces]]
+binding = "GAME"
+id = "YOUR_GAME_KV_ID"
+
+[[kv_namespaces]]
+binding = "CLAIMS"
+id = "YOUR_CLAIMS_KV_ID"

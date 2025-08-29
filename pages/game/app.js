@@ -1,4 +1,5 @@
-// Frontend mit Phantom, API, Boost-Countdown, Explorer-Link, NFT-Preview (Pinata)
+// Frontend mit Phantom, API, Boost-Countdown, Explorer-Link,
+// NFT-Preview (Pinata) + Profi-Extras: Thumbnail-Bar, Random-Preview, Pixelate
 
 import { runPiRoll } from "./three-scene.js?v=1";
 
@@ -14,31 +15,25 @@ import {
 
 const CFG = {
   RPCS: ["https://api.mainnet-beta.solana.com"],
-
   INPI_MINT: "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
   USDC_MINT: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-
   TREASURY_OWNER: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp", // INPI 80%
   INCINERATOR_OWNER: "1nc1nerator11111111111111111111111111111111",  // INPI 20% Burn
   LP_OWNER: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",          // USDC → LP
-
-  COST_INPI: 2000,    // 2000 INPI
-  COST_USDC: 1,       // 1.00 USDC
-
+  COST_INPI: 2000,
+  COST_USDC: 1,
   API_BASE: "https://api.inpinity.online/game",
-
   INPI_DECIMALS: 9,
   USDC_DECIMALS: 6,
 
-  // <<<<<< Pinata / IPFS – deine 0–100 JSONs
-  // Beispiel-Struktur angenommen: <CID>/<id>.json mit Feldern image, animation_url
+  // Pinata / IPFS (0–100 JSON: image + animation_url=mp4)
   PINATA_CID: "bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu",
-  // mehrere Gateways – try in Reihenfolge:
   GATEWAYS: [
     "https://gateway.pinata.cloud/ipfs/",
     "https://cloudflare-ipfs.com/ipfs/",
     "https://ipfs.io/ipfs/"
-  ]
+  ],
+  IPFS_TIMEOUT_MS: 4500   // schneller Fallback
 };
 
 // ---- DOM ----
@@ -57,12 +52,16 @@ const boostTimerEl = $("#boostTimer");
 // NFT Visual
 const autoPreviewEl = $("#autoPreview");
 const grid16El      = $("#grid16");
+const pixelateEl    = $("#pixelate");
 const btnShowId     = $("#btnShowId");
+const btnRandom     = $("#btnRandom");
+const btnLoadThumbs = $("#btnLoadThumbs");
 const manualIdInput = $("#manualId");
 const nftVideo      = $("#nftVideo");
 const nftImage      = $("#nftImage");
 const gridOverlay   = $("#gridOverlay");
 const metaBox       = $("#meta");
+const thumbBar      = $("#thumbBar");
 
 // Kostenanzeige
 spanCost.textContent = Number(CFG.COST_USDC).toFixed(2);
@@ -70,6 +69,10 @@ spanCost.textContent = Number(CFG.COST_USDC).toFixed(2);
 let wallet = null;
 let connection = null;
 let lastSig = null;
+
+// kleines Frontend-Cache
+const META_CACHE = new Map(); // id -> json
+const THUMB_CACHE = new Map(); // id -> url
 
 // ---- Helpers ----
 function pickRpc(){ return CFG.RPCS[Math.floor(Math.random()*CFG.RPCS.length)]; }
@@ -126,7 +129,7 @@ function updateBoostUI() {
 setInterval(updateBoostUI, 1000);
 updateBoostUI();
 
-// ---- Wallet Connect ----
+// ---- Wallet ----
 btnConnect.onclick = async () => {
   if (!window?.solana?.isPhantom) {
     alert("Phantom Wallet nicht gefunden. Bitte Phantom installieren.");
@@ -139,7 +142,7 @@ btnConnect.onclick = async () => {
   await refreshBalances();
 };
 
-// ---- Zahlungen bauen ----
+// ---- Zahlungen ----
 async function buildInpiTx(payer) {
   const conn = await ensureConn();
   const mint = new PublicKey(CFG.INPI_MINT);
@@ -207,49 +210,52 @@ async function callPlayAPI({txSig=null, mode="PAID"}) {
   return await res.json();
 }
 
-// ---- IPFS Helper ----
-function ipfsUrl(path) {
-  for (const gw of CFG.GATEWAYS) {
-    // erste funktionierende wird im fetchMetadata getestet
-    return gw + path; // wir nutzen testweise die erste; Fallbacks versuchen wir sequenziell im fetch
-  }
-  return "https://ipfs.io/ipfs/" + path;
+// ---- IPFS Utils (mit Fallbacks & Timeout) ----
+function toGatewayUrls(path) {
+  const p = path.startsWith("http") ? path : (path.startsWith("ipfs://") ? path.replace("ipfs://","") : path);
+  return p.startsWith("http") ? [p] : CFG.GATEWAYS.map(gw => gw + p);
 }
-
-async function fetchWithFallbacks(paths) {
-  // paths = [ "CID/x.json", ... ] oder vollqualifizierte URLs
-  const urls = [];
-  for (const p of paths) {
-    if (p.startsWith("http")) urls.push(p);
-    else for (const gw of CFG.GATEWAYS) urls.push(gw + p);
-  }
-  let lastErr;
+function timeout(ms) {
+  return new Promise((_, rej) => setTimeout(()=>rej(new Error("timeout")), ms));
+}
+async function fetchJsonWithFallbacks(path) {
+  const urls = toGatewayUrls(path);
   for (const u of urls) {
     try {
-      const res = await fetch(u, { cache: "no-store" });
+      const res = await Promise.race([fetch(u, {cache:"no-store"}), timeout(CFG.IPFS_TIMEOUT_MS)]);
       if (res.ok) return await res.json();
-      lastErr = new Error(`HTTP ${res.status}`);
-    } catch (e) { lastErr = e; }
+    } catch {}
   }
-  throw lastErr || new Error("IPFS-Fetch failed");
+  throw new Error("IPFS JSON nicht erreichbar");
+}
+async function headOk(url) {
+  try {
+    const res = await Promise.race([fetch(url, { method:"HEAD" }), timeout(2500)]);
+    return res.ok;
+  } catch { return false; }
 }
 
-async function fetchMetadata(id) {
-  // Annahme: <CID>/<id>.json
-  const path = `${CFG.PINATA_CID}/${id}.json`;
-  return await fetchWithFallbacks([path]);
-}
-
+// ---- NFT Preview ----
 function hideMedia() {
   nftVideo.pause();
-  nftVideo.removeAttribute("src");
+  nftVideo.removeAttribute("src"); nftVideo.removeAttribute("poster");
   nftVideo.style.display = "none";
   nftImage.removeAttribute("src");
   nftImage.style.display = "none";
 }
+function setGridOverlay(on) { gridOverlay.style.display = on ? "block" : "none"; }
+function setPixelate(on) {
+  nftImage.classList.toggle("pixelate", on);
+  nftVideo.classList.toggle("pixelate", on);
+}
+grid16El.onchange = () => setGridOverlay(grid16El.checked);
+pixelateEl.onchange = () => setPixelate(pixelateEl.checked);
 
-function setGridOverlay(on) {
-  gridOverlay.style.display = on ? "block" : "none";
+async function fetchMetadata(id) {
+  if (META_CACHE.has(id)) return META_CACHE.get(id);
+  const meta = await fetchJsonWithFallbacks(`${CFG.PINATA_CID}/${id}.json`);
+  META_CACHE.set(id, meta);
+  return meta;
 }
 
 async function renderNFTById(id) {
@@ -257,105 +263,148 @@ async function renderNFTById(id) {
   metaBox.textContent = "Lade Metadaten…";
   try {
     const meta = await fetchMetadata(id);
-    // gängige Felder: name, description, image, animation_url
     const name = meta.name ?? `#${id}`;
     const anim = meta.animation_url;
     const img  = meta.image;
 
+    // Video bevorzugen, Bild fallback
     if (anim && (anim.endsWith(".mp4") || anim.includes(".mp4"))) {
-      // Video bevorzugt
-      // animation_url kann ipfs://CID/... sein → normalisieren
-      const animPath = anim.startsWith("ipfs://") ? anim.replace("ipfs://", "") : anim;
-      nftVideo.src = animPath.startsWith("http") ? animPath : ipfsUrl(animPath);
+      const animPath = anim.startsWith("ipfs://") ? anim.replace("ipfs://","") : anim;
+      const candidates = toGatewayUrls(animPath);
+      let chosen = null;
+      for (const u of candidates) {
+        if (await headOk(u)) { chosen = u; break; }
+      }
+      nftVideo.src = chosen || candidates[0];
       if (img) {
-        const imgPath = img.startsWith("ipfs://") ? img.replace("ipfs://", "") : img;
-        nftVideo.poster = imgPath.startsWith("http") ? imgPath : ipfsUrl(imgPath);
+        const imgPath = img.startsWith("ipfs://") ? img.replace("ipfs://","") : img;
+        nftVideo.poster = toGatewayUrls(imgPath)[0];
       }
       nftVideo.style.display = "block";
-      await nftVideo.play().catch(()=>{}); // Autoplay evtl. blockiert, Controls vorhanden
+      setGridOverlay(grid16El.checked);
+      setPixelate(pixelateEl.checked);
+      await nftVideo.play().catch(()=>{});
     } else if (img) {
-      const imgPath = img.startsWith("ipfs://") ? img.replace("ipfs://", "") : img;
-      nftImage.src = imgPath.startsWith("http") ? imgPath : ipfsUrl(imgPath);
+      const imgPath = img.startsWith("ipfs://") ? img.replace("ipfs://","") : img;
+      nftImage.src = toGatewayUrls(imgPath)[0];
       nftImage.style.display = "block";
+      setGridOverlay(grid16El.checked);
+      setPixelate(pixelateEl.checked);
     } else {
       metaBox.textContent = "Keine Medienfelder gefunden.";
       return;
     }
 
-    metaBox.textContent = JSON.stringify({
-      id,
-      name,
-      has_video: !!anim,
-      image: img || null
-    }, null, 2);
-
-    setGridOverlay(grid16El.checked);
+    metaBox.textContent = JSON.stringify({ id, name, has_video: !!anim }, null, 2);
   } catch (e) {
     metaBox.textContent = "Fehler beim Laden: " + (e?.message || String(e));
     hideMedia();
   }
 }
 
+// Manuelle Anzeige
 btnShowId.onclick = async () => {
   const v = Number(manualIdInput.value);
-  if (Number.isNaN(v) || v < 0 || v > 100) {
-    alert("Bitte eine ID zwischen 0 und 100 eingeben.");
-    return;
-  }
+  if (Number.isNaN(v) || v < 0 || v > 100) return alert("Bitte eine ID zwischen 0 und 100 eingeben.");
   await renderNFTById(v);
 };
-grid16El.onchange = () => setGridOverlay(grid16El.checked);
+// Zufällige Anzeige
+btnRandom.onclick = async () => {
+  const v = Math.floor(Math.random()*101);
+  manualIdInput.value = v;
+  await renderNFTById(v);
+};
+
+// Thumbnail-Bar (Lazy)
+function thumbEl(id) {
+  const div = document.createElement("div");
+  div.className = "thumb loading";
+  div.dataset.id = String(id);
+  const badge = document.createElement("div");
+  badge.className = "badge";
+  badge.textContent = "#" + id;
+  const img = document.createElement("img");
+  img.alt = "#" + id;
+  div.appendChild(img);
+  div.appendChild(badge);
+  div.onclick = () => { manualIdInput.value = id; renderNFTById(id); };
+  return { div, img };
+}
+
+async function loadThumb(id) {
+  if (THUMB_CACHE.has(id)) return THUMB_CACHE.get(id);
+  try {
+    const meta = await fetchMetadata(id);
+    let thumbUrl = null;
+    if (meta.image) {
+      const path = meta.image.startsWith("ipfs://") ? meta.image.replace("ipfs://","") : meta.image;
+      thumbUrl = toGatewayUrls(path)[0];
+    } else if (meta.animation_url) {
+      // kein echtes Thumbnail — nimm Video-Poster wenn vorhanden, sonst nix
+      thumbUrl = ""; // leer => lassen wir Image leer
+    }
+    THUMB_CACHE.set(id, thumbUrl || "");
+    return thumbUrl || "";
+  } catch {
+    THUMB_CACHE.set(id, "");
+    return "";
+  }
+}
+
+btnLoadThumbs.onclick = async () => {
+  if (thumbBar.childElementCount) return; // schon geladen
+  // 0..100
+  const ids = Array.from({length:101}, (_,i)=>i);
+  for (const id of ids) {
+    const {div, img} = thumbEl(id);
+    thumbBar.appendChild(div);
+    // lazy load
+    requestIdleCallback(async () => {
+      const url = await loadThumb(id);
+      if (url) img.src = url;
+      div.classList.remove("loading");
+    }, { timeout: 1200 });
+  }
+};
 
 // ---- Play ----
 btnPlay.onclick = async () => {
   if (!wallet) return alert("Bitte erst mit Phantom verbinden.");
-  const pay = document.querySelector('input[name="pay"]:checked').value;
 
   linksEl.innerHTML = "";
   lastSig = null;
 
   try {
-    let apiResp, sigStr = null;
-
+    const pay = document.querySelector('input[name="pay"]:checked').value;
     const tx = (pay === "INPI")
       ? await buildInpiTx(wallet.publicKey)
       : await buildUsdcTx(wallet.publicKey);
 
     const sig = await window.solana.signAndSendTransaction(tx);
-    sigStr = sig.signature;
+    const sigStr = sig.signature;
     lastSig = sigStr;
 
-    // Confirm, dann API anpingen
+    // Confirm, dann API
     const conn = await ensureConn();
     await conn.confirmTransaction(sigStr, "confirmed");
-    apiResp = await callPlayAPI({txSig: sigStr, mode:"PAID"});
+    const apiResp = await callPlayAPI({txSig: sigStr, mode:"PAID"});
 
-    // Ergebnis anzeigen
     resultEl.textContent = JSON.stringify(apiResp.result, null, 2);
     proofEl.textContent  = JSON.stringify(apiResp.proof,  null, 2);
 
     // Explorer-Link
-    if (sigStr) {
-      const a = document.createElement("a");
-      a.href = `https://explorer.solana.com/tx/${sigStr}?cluster=mainnet`;
-      a.target = "_blank";
-      a.rel = "noopener";
-      a.textContent = "Transaktion im Solana Explorer öffnen";
-      linksEl.appendChild(a);
-    }
+    const a = document.createElement("a");
+    a.href = `https://explorer.solana.com/tx/${sigStr}?cluster=mainnet`;
+    a.target = "_blank"; a.rel = "noopener";
+    a.textContent = "Transaktion im Solana Explorer öffnen";
+    linksEl.appendChild(a);
 
-    // 3D-Animation deterministisch starten
+    // 3D-Animation deterministisch
     const fullSeed = sha256(wallet.publicKey.toBase58() + (lastSig || "FREE") + (apiResp?.proof?.blockhash || ""));
-    runPiRoll({
-      seed: fullSeed,
-      rows: 100,
-      visibleRows: 40,
-      won: !!apiResp?.result?.won,
-      pickedId: apiResp?.result?.id ?? null
-    });
+    runPiRoll({ seed: fullSeed, rows: 100, visibleRows: 40, won: !!apiResp?.result?.won, pickedId: apiResp?.result?.id ?? null });
 
-    // Automatische NFT-Vorschau bei Gewinn
-    if (autoPreviewEl.checked && apiResp?.result?.won && typeof apiResp.result.id === "number") {
+    // Auto-Preview
+    if (autoPreviewEl.checked && apiResp?.result?.won && Number.isInteger(apiResp.result.id)) {
       await renderNFTById(apiResp.result.id);
     }
 

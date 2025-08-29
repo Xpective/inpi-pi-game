@@ -2,9 +2,9 @@ import { sha256 } from "https://cdn.jsdelivr.net/npm/js-sha256@0.11.0/src/sha256
 
 const CFG = {
   RPCS: ["https://api.mainnet-beta.solana.com"],
-  DATA_URL: "https://inpinity.online/game/data/pi_phi_table.json", // von Pages serven
-  CREATOR: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
+  DATA_URL: "https://inpinity.online/game/data/pi_phi_table.json",
 
+  CREATOR: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
   INPI_MINT: "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
   USDC_MINT: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
 
@@ -16,17 +16,13 @@ const CFG = {
   COST_USDC: 1,
 
   BASE_WIN_BPS: 250,   // 2.50%
-  BOOST_BPS: 100,      // +1.00% volle Stunde
-  FREE_BPS:  100,      // +1.00% auf Gratis-Run
+  BOOST_BPS: 100,      // +1.00% zur vollen Stunde
+  FREE_BPS:  100,      // +1.00% Gratis-Run
 
-  JACKPOT_DRIP_INPI: 0.1415, // (Stub)
+  JACKPOT_DRIP_INPI: 0.1415,
   TIER_WEIGHTS: { Legendary: 0.05, Epic: 0.15, Rare: 0.3, Common: 1.0 },
   BONUS_AXIS: -0.05, BONUS_PI_EQ_PHI: -0.10, BONUS_MATCH_PAIR: -0.15
 };
-
-// KV Bindings (wrangler.toml):
-// GAME   → Laufdaten, Streaks, JSON-Cache, Sigs, Jackpot
-// CLAIMS → Gewinner-Mapping id -> {wallet, ts}
 
 function CORS(h) {
   return new Headers({
@@ -163,7 +159,7 @@ async function verifyPayment(env, body) {
 function calcWin(bpsBase, boost, free, seedHex) {
   let bps = bpsBase + (boost?CFG.BOOST_BPS:0) + (free?CFG.FREE_BPS:0);
   const roll = parseInt(seedHex.slice(-4), 16) % 10000;
-  return roll < bps; // true = Win
+  return roll < bps;
 }
 
 export default {
@@ -187,7 +183,7 @@ export default {
     if (url.pathname.endsWith("/play") && request.method === "POST") {
       try {
         const body = await request.json();
-        const paidInfo = await verifyPayment(env, body);
+        await verifyPayment(env, body);
 
         const blockhash = await latestBlockhash();
         const seed = sha256(body.wallet + (body.txSig||"FREE") + blockhash);

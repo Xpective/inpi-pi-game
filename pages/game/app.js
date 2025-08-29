@@ -1,5 +1,7 @@
-// Minimal-Frontend (Phantom + Tx + API-Ping + Boost-Countdown + Explorer-Link)
+// Frontend mit Phantom, API, Boost-Countdown, Explorer-Link, NFT-Preview (Pinata)
+
 import { runPiRoll } from "./three-scene.js?v=1";
+
 // @ts-ignore
 import {
   Connection, PublicKey, Transaction
@@ -26,7 +28,17 @@ const CFG = {
   API_BASE: "https://api.inpinity.online/game",
 
   INPI_DECIMALS: 9,
-  USDC_DECIMALS: 6
+  USDC_DECIMALS: 6,
+
+  // <<<<<< Pinata / IPFS – deine 0–100 JSONs
+  // Beispiel-Struktur angenommen: <CID>/<id>.json mit Feldern image, animation_url
+  PINATA_CID: "bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu",
+  // mehrere Gateways – try in Reihenfolge:
+  GATEWAYS: [
+    "https://gateway.pinata.cloud/ipfs/",
+    "https://cloudflare-ipfs.com/ipfs/",
+    "https://ipfs.io/ipfs/"
+  ]
 };
 
 // ---- DOM ----
@@ -42,7 +54,17 @@ const hintEl     = $("#hint");
 const linksEl    = $("#links");
 const boostTimerEl = $("#boostTimer");
 
-// Kostenanzeige (2 Nachkommastellen)
+// NFT Visual
+const autoPreviewEl = $("#autoPreview");
+const grid16El      = $("#grid16");
+const btnShowId     = $("#btnShowId");
+const manualIdInput = $("#manualId");
+const nftVideo      = $("#nftVideo");
+const nftImage      = $("#nftImage");
+const gridOverlay   = $("#gridOverlay");
+const metaBox       = $("#meta");
+
+// Kostenanzeige
 spanCost.textContent = Number(CFG.COST_USDC).toFixed(2);
 
 let wallet = null;
@@ -79,23 +101,18 @@ function nowBerlin() {
   const offset = (m>=2 && m<=9) ? 2 : 1; // grobe Sommerzeit
   return new Date(d.getTime() + offset*3600*1000);
 }
-
 function secsToNextFullHour() {
   const b = nowBerlin();
   const next = new Date(b);
   next.setMinutes(0, 0, 0);
-  if (b.getMinutes() !== 0 || b.getSeconds() !== 0) {
-    next.setHours(b.getHours() + 1);
-  }
+  if (b.getMinutes() !== 0 || b.getSeconds() !== 0) next.setHours(b.getHours() + 1);
   return Math.max(0, Math.floor((next - b) / 1000));
 }
-
 function formatMMSS(total) {
   const m = Math.floor(total/60);
   const s = total % 60;
   return `${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
 }
-
 function updateBoostUI() {
   const secs = secsToNextFullHour();
   if (secs === 0) {
@@ -190,12 +207,111 @@ async function callPlayAPI({txSig=null, mode="PAID"}) {
   return await res.json();
 }
 
+// ---- IPFS Helper ----
+function ipfsUrl(path) {
+  for (const gw of CFG.GATEWAYS) {
+    // erste funktionierende wird im fetchMetadata getestet
+    return gw + path; // wir nutzen testweise die erste; Fallbacks versuchen wir sequenziell im fetch
+  }
+  return "https://ipfs.io/ipfs/" + path;
+}
+
+async function fetchWithFallbacks(paths) {
+  // paths = [ "CID/x.json", ... ] oder vollqualifizierte URLs
+  const urls = [];
+  for (const p of paths) {
+    if (p.startsWith("http")) urls.push(p);
+    else for (const gw of CFG.GATEWAYS) urls.push(gw + p);
+  }
+  let lastErr;
+  for (const u of urls) {
+    try {
+      const res = await fetch(u, { cache: "no-store" });
+      if (res.ok) return await res.json();
+      lastErr = new Error(`HTTP ${res.status}`);
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error("IPFS-Fetch failed");
+}
+
+async function fetchMetadata(id) {
+  // Annahme: <CID>/<id>.json
+  const path = `${CFG.PINATA_CID}/${id}.json`;
+  return await fetchWithFallbacks([path]);
+}
+
+function hideMedia() {
+  nftVideo.pause();
+  nftVideo.removeAttribute("src");
+  nftVideo.style.display = "none";
+  nftImage.removeAttribute("src");
+  nftImage.style.display = "none";
+}
+
+function setGridOverlay(on) {
+  gridOverlay.style.display = on ? "block" : "none";
+}
+
+async function renderNFTById(id) {
+  hideMedia();
+  metaBox.textContent = "Lade Metadaten…";
+  try {
+    const meta = await fetchMetadata(id);
+    // gängige Felder: name, description, image, animation_url
+    const name = meta.name ?? `#${id}`;
+    const anim = meta.animation_url;
+    const img  = meta.image;
+
+    if (anim && (anim.endsWith(".mp4") || anim.includes(".mp4"))) {
+      // Video bevorzugt
+      // animation_url kann ipfs://CID/... sein → normalisieren
+      const animPath = anim.startsWith("ipfs://") ? anim.replace("ipfs://", "") : anim;
+      nftVideo.src = animPath.startsWith("http") ? animPath : ipfsUrl(animPath);
+      if (img) {
+        const imgPath = img.startsWith("ipfs://") ? img.replace("ipfs://", "") : img;
+        nftVideo.poster = imgPath.startsWith("http") ? imgPath : ipfsUrl(imgPath);
+      }
+      nftVideo.style.display = "block";
+      await nftVideo.play().catch(()=>{}); // Autoplay evtl. blockiert, Controls vorhanden
+    } else if (img) {
+      const imgPath = img.startsWith("ipfs://") ? img.replace("ipfs://", "") : img;
+      nftImage.src = imgPath.startsWith("http") ? imgPath : ipfsUrl(imgPath);
+      nftImage.style.display = "block";
+    } else {
+      metaBox.textContent = "Keine Medienfelder gefunden.";
+      return;
+    }
+
+    metaBox.textContent = JSON.stringify({
+      id,
+      name,
+      has_video: !!anim,
+      image: img || null
+    }, null, 2);
+
+    setGridOverlay(grid16El.checked);
+  } catch (e) {
+    metaBox.textContent = "Fehler beim Laden: " + (e?.message || String(e));
+    hideMedia();
+  }
+}
+
+btnShowId.onclick = async () => {
+  const v = Number(manualIdInput.value);
+  if (Number.isNaN(v) || v < 0 || v > 100) {
+    alert("Bitte eine ID zwischen 0 und 100 eingeben.");
+    return;
+  }
+  await renderNFTById(v);
+};
+grid16El.onchange = () => setGridOverlay(grid16El.checked);
+
 // ---- Play ----
 btnPlay.onclick = async () => {
   if (!wallet) return alert("Bitte erst mit Phantom verbinden.");
   const pay = document.querySelector('input[name="pay"]:checked').value;
 
-  linksEl.innerHTML = ""; // alte Links resetten
+  linksEl.innerHTML = "";
   lastSig = null;
 
   try {
@@ -218,22 +334,7 @@ btnPlay.onclick = async () => {
     resultEl.textContent = JSON.stringify(apiResp.result, null, 2);
     proofEl.textContent  = JSON.stringify(apiResp.proof,  null, 2);
 
-    
-    // Nach:
-// resultEl.textContent = JSON.stringify(apiResp.result, null, 2);
-// proofEl.textContent  = JSON.stringify(apiResp.proof,  null, 2);
-
-// Neu: deterministische 3D-Animation starten
-const fullSeed = sha256(wallet.publicKey.toBase58() + (lastSig || "FREE") + (apiResp?.proof?.blockhash || ""));
-runPiRoll({
-  seed: fullSeed,                 // deterministisch
-  rows: 100,                      // Simulationszeilen
-  visibleRows: 40,                // Darstellung (Performance)
-  won: !!apiResp?.result?.won,    // visuelles Feedback
-  pickedId: apiResp?.result?.id ?? null  // (optional) – könnte für HUD genutzt werden
-});
-
-    // Tipp #2: Explorer-Link direkt anzeigen
+    // Explorer-Link
     if (sigStr) {
       const a = document.createElement("a");
       a.href = `https://explorer.solana.com/tx/${sigStr}?cluster=mainnet`;
@@ -241,6 +342,21 @@ runPiRoll({
       a.rel = "noopener";
       a.textContent = "Transaktion im Solana Explorer öffnen";
       linksEl.appendChild(a);
+    }
+
+    // 3D-Animation deterministisch starten
+    const fullSeed = sha256(wallet.publicKey.toBase58() + (lastSig || "FREE") + (apiResp?.proof?.blockhash || ""));
+    runPiRoll({
+      seed: fullSeed,
+      rows: 100,
+      visibleRows: 40,
+      won: !!apiResp?.result?.won,
+      pickedId: apiResp?.result?.id ?? null
+    });
+
+    // Automatische NFT-Vorschau bei Gewinn
+    if (autoPreviewEl.checked && apiResp?.result?.won && typeof apiResp.result.id === "number") {
+      await renderNFTById(apiResp.result.id);
     }
 
     await refreshBalances();

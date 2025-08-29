@@ -1,40 +1,63 @@
 :root { font-family: system-ui, Arial; color-scheme: dark light; }
-body { margin: 0 auto; max-width: 900px; padding: 1rem; }
+body { margin: 0 auto; max-width: 980px; padding: 1rem; }
 header { display:flex; gap:1rem; align-items:center; justify-content:space-between; }
 .panel { border:1px solid #ddd; border-radius:12px; padding:1rem; margin:1rem 0; }
 button { padding:.7rem 1rem; border-radius:10px; cursor:pointer; }
-pre { background:#0b0b0b0d; padding:.75rem; border-radius:8px; overflow:auto; }
+pre { background: #0b0b0b0d; padding:.75rem; border-radius:8px; overflow:auto; }
 .balances { display:flex; gap:1.5rem; margin:.5rem 0; }
-#boostTimer { font-variant-numeric: tabular-nums; }
 .row { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; margin:.5rem 0; }
 .row .ml { margin-left: 1rem; }
+.mono { font-variant-numeric: tabular-nums; opacity:.85; }
+
+.stage {
+  width:100%; height:420px; border-radius:12px;
+  overflow:hidden; background:#0b0b0b12;
+}
 
 #visualWrap {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 16/9;
-  background: #080a0c;
-  border-radius: 12px;
-  overflow: hidden;
+  position: relative; width: 100%; aspect-ratio: 16/9;
+  background: #080a0c; border-radius: 12px; overflow: hidden;
 }
 #nftVideo, #nftImage {
-  position:absolute; inset:0;
-  width:100%; height:100%;
-  object-fit: cover;
+  position:absolute; inset:0; width:100%; height:100%; object-fit: cover;
 }
 #gridOverlay {
-  position:absolute; inset:0;
-  pointer-events: none;
-  display:none; /* wird per Toggle aktiviert */
+  position:absolute; inset:0; pointer-events: none; display:none;
   background-image:
     linear-gradient(to right, rgba(255,255,255,.12) 1px, transparent 1px),
     linear-gradient(to bottom, rgba(255,255,255,.12) 1px, transparent 1px);
   background-size: calc(100% / 16) calc(100% / 16);
   mix-blend-mode: overlay;
 }
+.pixelate {
+  /* einfacher Retro-Look */
+  image-rendering: pixelated;
+  transform: scale(1.0001); /* Safari-Workaround für pixelated */
+}
+
 .metabox {
-  margin-top:.5rem; font-size:.9rem; opacity:.9; white-space:pre-wrap;
+  margin-top:.5rem; font-size:.9rem; opacity:.95; white-space:pre-wrap;
   background:#0b0b0b0d; padding:.5rem .75rem; border-radius:8px;
 }
+
+.thumbbar {
+  margin-top: .75rem; display:grid; gap:8px;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+}
+.thumb {
+  position:relative; border-radius:10px; overflow:hidden; background:#0e1116; height:84px; cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+}
+.thumb img { width:100%; height:100%; object-fit:cover; display:block; }
+.thumb .badge {
+  position:absolute; left:6px; top:6px;
+  background: rgba(0,0,0,.6); color:#fff; font-size:.75rem; padding:2px 6px; border-radius:999px;
+}
+.thumb.loading::after {
+  content:""; position:absolute; inset:0; background:
+    repeating-linear-gradient( -45deg, #0000 0 12px, #ffffff10 12px 24px );
+  animation: slide 1.2s linear infinite;
+}
+@keyframes slide { to { background-position: 100% 0; } }
 
 #stage canvas { display:block; width:100%; height:100%; }

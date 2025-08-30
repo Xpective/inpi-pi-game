@@ -8,6 +8,18 @@ import { runPiRoll } from "./three-scene.js?v=1";
 import { Connection, PublicKey, Transaction } from "https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.3/lib/index.iife.min.js";
 // @ts-ignore
 import { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, createTransferCheckedInstruction } from "https://cdn.jsdelivr.net/npm/@solana/spl-token@0.4.8/index.iife.min.js";
+// web3.js kannst du lassen wie bisher (IIFE ist okay)
+// @ts-ignore
+import {
+  Connection, PublicKey, Transaction
+} from "https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.3/lib/index.iife.min.js";
+
+// spl-token: ESM statt IIFE (die IIFE-Datei gibt es nicht)
+import {
+  getAssociatedTokenAddress,
+  createAssociatedTokenAccountInstruction,
+  createTransferCheckedInstruction
+} from "https://esm.sh/@solana/spl-token@0.4.8?bundle";
 
 const CFG = {
   RPCS: ["https://api.mainnet-beta.solana.com"],

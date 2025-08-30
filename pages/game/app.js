@@ -3,24 +3,19 @@
 
 import { runPiRoll } from "./three-scene.js?v=1";
 
-// Solana libs
-// @ts-ignore
-import { Connection, PublicKey, Transaction } from "https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.3/lib/index.iife.min.js";
-// @ts-ignore
-import { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, createTransferCheckedInstruction } from "https://cdn.jsdelivr.net/npm/@solana/spl-token@0.4.8/index.iife.min.js";
-// web3.js kannst du lassen wie bisher (IIFE ist okay)
-// @ts-ignore
-import {
-  Connection, PublicKey, Transaction
-} from "https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.3/lib/index.iife.min.js";
+/* ------------------ Solana libs ------------------ */
+// web3.js als IIFE-Bundle (Namespace-Import, dann Destrukturierung)
+import * as web3 from "https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.3/lib/index.iife.min.js";
+const { Connection, PublicKey, Transaction } = web3;
 
-// spl-token: ESM statt IIFE (die IIFE-Datei gibt es nicht)
+// spl-token als ESM (kein IIFE verfügbar) – mit Bundle + passendem Target
 import {
   getAssociatedTokenAddress,
   createAssociatedTokenAccountInstruction,
   createTransferCheckedInstruction
-} from "https://esm.sh/@solana/spl-token@0.4.8?bundle";
+} from "https://esm.sh/@solana/spl-token@0.4.8?bundle&target=es2020";
 
+/* ------------------ Config ------------------ */
 const CFG = {
   RPCS: ["https://api.mainnet-beta.solana.com"],
   INPI_MINT: "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
@@ -44,14 +39,14 @@ const CFG = {
   IPFS_TIMEOUT_MS: 4500
 };
 
-// ---- SHA-256 (WebCrypto) ----
+/* ------------------ SHA-256 via WebCrypto ------------------ */
 async function sha256Hex(str){
   const data = new TextEncoder().encode(str);
   const hash = await crypto.subtle.digest("SHA-256", data);
   return Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,"0")).join("");
 }
 
-// ---- DOM ----
+/* ------------------ DOM ------------------ */
 const $ = (s)=>document.querySelector(s);
 const btnConnect = $("#btnConnect");
 const btnPlay    = $("#btnPlay");
@@ -92,7 +87,7 @@ let lastSig = null;
 const META_CACHE = new Map();  // id -> json
 const THUMB_CACHE = new Map(); // id -> url
 
-// ---- Helpers ----
+/* ------------------ Helpers ------------------ */
 function pickRpc(){ return CFG.RPCS[Math.floor(Math.random()*CFG.RPCS.length)]; }
 async function ensureConn(){ return connection ?? (connection = new Connection(pickRpc(), "confirmed")); }
 async function getAta(mint, owner){ return await getAssociatedTokenAddress(new PublicKey(mint), new PublicKey(owner), false); }
@@ -115,7 +110,7 @@ async function refreshBalances() {
   if (spanUsdc) spanUsdc.textContent = usdc.ui.toFixed(4);
 }
 
-// ---- Europe/Berlin Boost ----
+/* ------------------ Europe/Berlin Boost ------------------ */
 function nowBerlin() {
   const d = new Date();
   const m = d.getUTCMonth();
@@ -142,7 +137,7 @@ function updateBoostUI() {
 }
 setInterval(updateBoostUI, 1000); updateBoostUI();
 
-// ---- Wallet ----
+/* ------------------ Wallet ------------------ */
 if (btnConnect) {
   btnConnect.onclick = async () => {
     if (!window?.solana?.isPhantom) return alert("Phantom Wallet nicht gefunden. Bitte Phantom installieren.");
@@ -154,7 +149,7 @@ if (btnConnect) {
   };
 }
 
-// ---- Zahlungen ----
+/* ------------------ Zahlungen ------------------ */
 async function buildInpiTx(payer) {
   const conn = await ensureConn();
   const mint = new PublicKey(CFG.INPI_MINT);
@@ -200,7 +195,6 @@ async function buildUsdcTx(payer) {
 
   const info = await conn.getAccountInfo(ataLp);
   if (!info) ix.push(createAssociatedTokenAccountInstruction(payerPk, ataLp, lpOwner, mint));
-
   ix.push(createTransferCheckedInstruction(ataPayer, mint, ataLp, payerPk, Number(amount), decimals));
 
   const tx = new Transaction().add(...ix);
@@ -209,7 +203,7 @@ async function buildUsdcTx(payer) {
   return tx;
 }
 
-// ---- API ----
+/* ------------------ API ------------------ */
 async function callPlayAPI({txSig=null, mode="PAID"}) {
   const res = await fetch(`${CFG.API_BASE}/play`, {
     method: "POST",
@@ -223,7 +217,7 @@ async function callPlayAPI({txSig=null, mode="PAID"}) {
   return await res.json();
 }
 
-// ---- IPFS Utils ----
+/* ------------------ IPFS Utils ------------------ */
 function toGatewayUrls(path) {
   const p = path.startsWith("http") ? path : (path.startsWith("ipfs://") ? path.replace("ipfs://","") : path);
   return p.startsWith("http") ? [p] : CFG.GATEWAYS.map(gw => gw + p);
@@ -246,7 +240,7 @@ async function headOk(url) {
   } catch { return false; }
 }
 
-// ---- NFT Preview ----
+/* ------------------ NFT Preview ------------------ */
 function hideMedia() {
   nftVideo.pause(); nftVideo.removeAttribute("src"); nftVideo.removeAttribute("poster"); nftVideo.style.display = "none";
   nftImage.removeAttribute("src"); nftImage.style.display = "none";
@@ -370,7 +364,7 @@ if (prevPage) prevPage.onclick = async () => { currentPage = (currentPage - 1 + 
 if (nextPage) nextPage.onclick = async () => { currentPage = (currentPage + 1) % PAGES; await renderThumbPage(currentPage); };
 renderPageInfo();
 
-// ---- Play ----
+/* ------------------ Play ------------------ */
 if (btnPlay) {
   btnPlay.onclick = async () => {
     if (!wallet) return alert("Bitte erst mit Phantom verbinden.");
@@ -403,7 +397,13 @@ if (btnPlay) {
       // 3D-Animation deterministisch (Seed via WebCrypto)
       const seedInput = wallet.publicKey.toBase58() + (lastSig || "FREE") + (apiResp?.proof?.blockhash || "");
       const fullSeed = await sha256Hex(seedInput);
-      runPiRoll({ seed: fullSeed, rows: 400, visibleRows: 400, won: !!apiResp?.result?.won, pickedId: apiResp?.result?.id ?? null });
+      runPiRoll({
+        seed: fullSeed,
+        rows: 400,
+        visibleRows: 400,
+        won: !!apiResp?.result?.won,
+        pickedId: apiResp?.result?.id ?? null
+      });
 
       // Auto-Preview
       if (autoPreviewEl?.checked && apiResp?.result?.won && Number.isInteger(apiResp.result.id)) {

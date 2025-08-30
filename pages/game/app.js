@@ -3,6 +3,7 @@
 
 import { runPiRoll } from "./three-scene.js?v=1";
 
+// Solana libs
 // @ts-ignore
 import { Connection, PublicKey, Transaction } from "https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.3/lib/index.iife.min.js";
 // @ts-ignore
@@ -12,9 +13,9 @@ const CFG = {
   RPCS: ["https://api.mainnet-beta.solana.com"],
   INPI_MINT: "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
   USDC_MINT: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-  TREASURY_OWNER: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
-  INCINERATOR_OWNER: "1nc1nerator11111111111111111111111111111111",
-  LP_OWNER: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",
+  TREASURY_OWNER: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp", // INPI 80%
+  INCINERATOR_OWNER: "1nc1nerator11111111111111111111111111111111",  // INPI 20% Burn
+  LP_OWNER: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",          // USDC → LP
   COST_INPI: 2000,
   COST_USDC: 1,
   API_BASE: "https://api.inpinity.online/game",
@@ -30,6 +31,13 @@ const CFG = {
   ],
   IPFS_TIMEOUT_MS: 4500
 };
+
+// ---- SHA-256 (WebCrypto) ----
+async function sha256Hex(str){
+  const data = new TextEncoder().encode(str);
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
 
 // ---- DOM ----
 const $ = (s)=>document.querySelector(s);
@@ -62,7 +70,7 @@ const prevPage      = $("#prevPage");
 const nextPage      = $("#nextPage");
 
 // Kostenanzeige
-spanCost.textContent = Number(CFG.COST_USDC).toFixed(2);
+if (spanCost) spanCost.textContent = Number(CFG.COST_USDC).toFixed(2);
 
 let wallet = null;
 let connection = null;
@@ -91,8 +99,8 @@ async function refreshBalances() {
     fetchTokenBalance(CFG.INPI_MINT, wallet.publicKey, CFG.INPI_DECIMALS),
     fetchTokenBalance(CFG.USDC_MINT, wallet.publicKey, CFG.USDC_DECIMALS),
   ]);
-  spanInpi.textContent = inpi.ui.toFixed(4);
-  spanUsdc.textContent = usdc.ui.toFixed(4);
+  if (spanInpi) spanInpi.textContent = inpi.ui.toFixed(4);
+  if (spanUsdc) spanUsdc.textContent = usdc.ui.toFixed(4);
 }
 
 // ---- Europe/Berlin Boost ----
@@ -116,20 +124,23 @@ function formatMMSS(total) {
 }
 function updateBoostUI() {
   const secs = secsToNextFullHour();
+  if (!hintEl || !boostTimerEl) return;
   if (secs === 0) { hintEl.textContent = "Community-Boost aktiv: +1.00% Chance"; boostTimerEl.textContent = "Jetzt!"; }
   else { hintEl.textContent = "Tipp: Zur vollen Stunde +1.00% Boost"; boostTimerEl.textContent = "Nächster Boost in " + formatMMSS(secs); }
 }
 setInterval(updateBoostUI, 1000); updateBoostUI();
 
 // ---- Wallet ----
-btnConnect.onclick = async () => {
-  if (!window?.solana?.isPhantom) return alert("Phantom Wallet nicht gefunden. Bitte Phantom installieren.");
-  const resp = await window.solana.connect();
-  wallet = resp;
-  btnConnect.textContent = `Verbunden: ${wallet.publicKey.toBase58().slice(0,6)}…`;
-  await ensureConn();
-  await refreshBalances();
-};
+if (btnConnect) {
+  btnConnect.onclick = async () => {
+    if (!window?.solana?.isPhantom) return alert("Phantom Wallet nicht gefunden. Bitte Phantom installieren.");
+    const resp = await window.solana.connect();
+    wallet = resp;
+    btnConnect.textContent = `Verbunden: ${wallet.publicKey.toBase58().slice(0,6)}…`;
+    await ensureConn();
+    await refreshBalances();
+  };
+}
 
 // ---- Zahlungen ----
 async function buildInpiTx(payer) {
@@ -177,6 +188,7 @@ async function buildUsdcTx(payer) {
 
   const info = await conn.getAccountInfo(ataLp);
   if (!info) ix.push(createAssociatedTokenAccountInstruction(payerPk, ataLp, lpOwner, mint));
+
   ix.push(createTransferCheckedInstruction(ataPayer, mint, ataLp, payerPk, Number(amount), decimals));
 
   const tx = new Transaction().add(...ix);
@@ -190,7 +202,11 @@ async function callPlayAPI({txSig=null, mode="PAID"}) {
   const res = await fetch(`${CFG.API_BASE}/play`, {
     method: "POST",
     headers: {"content-type":"application/json"},
-    body: JSON.stringify({ wallet: wallet.publicKey.toBase58(), txSig, mode, pay: document.querySelector('input[name="pay"]:checked').value })
+    body: JSON.stringify({
+      wallet: wallet.publicKey.toBase58(),
+      txSig, mode,
+      pay: document.querySelector('input[name="pay"]:checked')?.value || "INPI"
+    })
   });
   return await res.json();
 }
@@ -225,8 +241,8 @@ function hideMedia() {
 }
 function setGridOverlay(on) { gridOverlay.style.display = on ? "block" : "none"; }
 function setPixelate(on) { nftImage.classList.toggle("pixelate", on); nftVideo.classList.toggle("pixelate", on); }
-grid16El.onchange = () => setGridOverlay(grid16El.checked);
-pixelateEl.onchange = () => setPixelate(pixelateEl.checked);
+if (grid16El) grid16El.onchange = () => setGridOverlay(grid16El.checked);
+if (pixelateEl) pixelateEl.onchange = () => setPixelate(pixelateEl.checked);
 
 async function fetchMetadata(id) {
   if (META_CACHE.has(id)) return META_CACHE.get(id);
@@ -254,13 +270,13 @@ async function renderNFTById(id) {
         nftVideo.poster = toGatewayUrls(p)[0];
       }
       nftVideo.style.display = "block";
-      setGridOverlay(grid16El.checked); setPixelate(pixelateEl.checked);
+      setGridOverlay(grid16El?.checked); setPixelate(pixelateEl?.checked);
       await nftVideo.play().catch(()=>{});
     } else if (img) {
       const p = img.startsWith("ipfs://") ? img.replace("ipfs://","") : img;
       nftImage.src = toGatewayUrls(p)[0];
       nftImage.style.display = "block";
-      setGridOverlay(grid16El.checked); setPixelate(pixelateEl.checked);
+      setGridOverlay(grid16El?.checked); setPixelate(pixelateEl?.checked);
     } else {
       metaBox.textContent = "Keine Medienfelder gefunden."; return;
     }
@@ -273,17 +289,21 @@ async function renderNFTById(id) {
 }
 
 // Manuelle Anzeige
-btnShowId.onclick = async () => {
-  const v = Number(manualIdInput.value);
-  if (Number.isNaN(v) || v < 0 || v > 399) return alert("Bitte eine ID zwischen 0 und 399 eingeben.");
-  await renderNFTById(v);
-};
+if (btnShowId) {
+  btnShowId.onclick = async () => {
+    const v = Number(manualIdInput.value);
+    if (Number.isNaN(v) || v < 0 || v > 399) return alert("Bitte eine ID zwischen 0 und 399 eingeben.");
+    await renderNFTById(v);
+  };
+}
 // Zufällige Anzeige
-btnRandom.onclick = async () => {
-  const v = Math.floor(Math.random()*400);
-  manualIdInput.value = v;
-  await renderNFTById(v);
-};
+if (btnRandom) {
+  btnRandom.onclick = async () => {
+    const v = Math.floor(Math.random()*400);
+    manualIdInput.value = v;
+    await renderNFTById(v);
+  };
+}
 
 // Thumbs + Pager 0..399 (4 Seiten à 100)
 let currentPage = 0;               // 0..3
@@ -292,8 +312,8 @@ const MAX_ID = 399;
 const PAGES = 4;
 
 function pageRange(p) { const start = p*PAGE_SIZE; const end = Math.min(start+PAGE_SIZE-1, MAX_ID); return {start, end}; }
-function renderPageInfo() { pageInfo.textContent = `Seite ${currentPage+1}/${PAGES}`; }
-function clearThumbs() { thumbBar.innerHTML = ""; }
+function renderPageInfo() { if (pageInfo) pageInfo.textContent = `Seite ${currentPage+1}/${PAGES}`; }
+function clearThumbs() { if (thumbBar) thumbBar.innerHTML = ""; }
 
 function thumbEl(id) {
   const div = document.createElement("div");
@@ -325,56 +345,63 @@ async function renderThumbPage(p) {
   for (const id of ids) {
     const {div, img} = thumbEl(id);
     thumbBar.appendChild(div);
-    requestIdleCallback(async () => {
+    (window.requestIdleCallback || setTimeout)(async () => {
       const url = await loadThumb(id);
       if (url) img.src = url;
       div.classList.remove("loading");
-    }, { timeout: 1200 });
+    }, 1);
   }
   renderPageInfo();
 }
-btnLoadThumbs.onclick = async () => { await renderThumbPage(currentPage); };
-prevPage.onclick = async () => { currentPage = (currentPage - 1 + PAGES) % PAGES; await renderThumbPage(currentPage); };
-nextPage.onclick = async () => { currentPage = (currentPage + 1) % PAGES; await renderThumbPage(currentPage); };
+if (btnLoadThumbs) btnLoadThumbs.onclick = async () => { await renderThumbPage(currentPage); };
+if (prevPage) prevPage.onclick = async () => { currentPage = (currentPage - 1 + PAGES) % PAGES; await renderThumbPage(currentPage); };
+if (nextPage) nextPage.onclick = async () => { currentPage = (currentPage + 1) % PAGES; await renderThumbPage(currentPage); };
 renderPageInfo();
 
 // ---- Play ----
-btnPlay.onclick = async () => {
-  if (!wallet) return alert("Bitte erst mit Phantom verbinden.");
+if (btnPlay) {
+  btnPlay.onclick = async () => {
+    if (!wallet) return alert("Bitte erst mit Phantom verbinden.");
 
-  linksEl.innerHTML = "";
-  lastSig = null;
+    linksEl.innerHTML = "";
+    lastSig = null;
 
-  try {
-    const pay = document.querySelector('input[name="pay"]:checked').value;
-    const tx = (pay === "INPI") ? await buildInpiTx(wallet.publicKey) : await buildUsdcTx(wallet.publicKey);
-    const sig = await window.solana.signAndSendTransaction(tx);
-    const sigStr = sig.signature;
-    lastSig = sigStr;
+    try {
+      const pay = document.querySelector('input[name="pay"]:checked')?.value || "INPI";
+      const tx = (pay === "INPI") ? await buildInpiTx(wallet.publicKey) : await buildUsdcTx(wallet.publicKey);
+      const sig = await window.solana.signAndSendTransaction(tx);
+      const sigStr = sig.signature || sig; // Phantom liefert obj mit .signature
 
-    const conn = await ensureConn();
-    await conn.confirmTransaction(sigStr, "confirmed");
-    const apiResp = await callPlayAPI({txSig: sigStr, mode:"PAID"});
+      lastSig = sigStr;
 
-    resultEl.textContent = JSON.stringify(apiResp.result, null, 2);
-    proofEl.textContent  = JSON.stringify(apiResp.proof,  null, 2);
+      const conn = await ensureConn();
+      await conn.confirmTransaction(sigStr, "confirmed");
+      const apiResp = await callPlayAPI({txSig: sigStr, mode:"PAID"});
 
-    const a = document.createElement("a");
-    a.href = `https://explorer.solana.com/tx/${sigStr}?cluster=mainnet`;
-    a.target = "_blank"; a.rel = "noopener";
-    a.textContent = "Transaktion im Solana Explorer öffnen";
-    linksEl.appendChild(a);
+      resultEl.textContent = JSON.stringify(apiResp.result, null, 2);
+      proofEl.textContent  = JSON.stringify(apiResp.proof,  null, 2);
 
-    const fullSeed = sha256(wallet.publicKey.toBase58() + (lastSig || "FREE") + (apiResp?.proof?.blockhash || ""));
-    runPiRoll({ seed: fullSeed, rows: 400, visibleRows: 400, won: !!apiResp?.result?.won, pickedId: apiResp?.result?.id ?? null });
+      // Explorer-Link
+      const a = document.createElement("a");
+      a.href = `https://explorer.solana.com/tx/${sigStr}?cluster=mainnet`;
+      a.target = "_blank"; a.rel = "noopener";
+      a.textContent = "Transaktion im Solana Explorer öffnen";
+      linksEl.appendChild(a);
 
-    if (autoPreviewEl.checked && apiResp?.result?.won && Number.isInteger(apiResp.result.id)) {
-      await renderNFTById(apiResp.result.id);
+      // 3D-Animation deterministisch (Seed via WebCrypto)
+      const seedInput = wallet.publicKey.toBase58() + (lastSig || "FREE") + (apiResp?.proof?.blockhash || "");
+      const fullSeed = await sha256Hex(seedInput);
+      runPiRoll({ seed: fullSeed, rows: 400, visibleRows: 400, won: !!apiResp?.result?.won, pickedId: apiResp?.result?.id ?? null });
+
+      // Auto-Preview
+      if (autoPreviewEl?.checked && apiResp?.result?.won && Number.isInteger(apiResp.result.id)) {
+        await renderNFTById(apiResp.result.id);
+      }
+
+      await refreshBalances();
+    } catch (e) {
+      console.error(e);
+      resultEl.textContent = "Fehler: " + (e?.message || String(e));
     }
-
-    await refreshBalances();
-  } catch (e) {
-    console.error(e);
-    resultEl.textContent = "Fehler: " + (e?.message || String(e));
-  }
-};
+  };
+}

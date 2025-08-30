@@ -4,12 +4,12 @@
 
 import { runPiRoll } from "./three-scene.js?v=1";
 
-/* ------------------ Solana libs ------------------ */
-// web3.js als IIFE-Bundle (Namespace-Import, dann Destrukturierung)
-import * as web3 from "https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.3/lib/index.iife.min.js";
-const { Connection, PublicKey, Transaction } = web3;
-
-// spl-token als ESM (kein IIFE verfügbar) – mit Bundle + passendem Target
+/* ------------------ Solana libs (ESM!) ------------------ */
+// web3.js als ESM (kein IIFE mehr) – fix für "Connection is not a constructor"
+import {
+  Connection, PublicKey, Transaction
+} from "https://esm.sh/@solana/web3.js@1.95.3?bundle&target=es2020";
+// spl-token als ESM (kein IIFE verfügbar)
 import {
   getAssociatedTokenAddress,
   createAssociatedTokenAccountInstruction,
@@ -19,20 +19,23 @@ import {
 /* ------------------ Config ------------------ */
 const CFG = {
   RPCS: ["https://api.mainnet-beta.solana.com"],
+
   INPI_MINT: "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
   USDC_MINT: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
   TREASURY_OWNER: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp", // INPI 80%
   INCINERATOR_OWNER: "1nc1nerator11111111111111111111111111111111",  // INPI 20% Burn
   LP_OWNER: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",          // USDC → LP
+
   COST_INPI: 2000,
   COST_USDC: 1,
-  API_BASE: "https://api.inpinity.online/game",
   INPI_DECIMALS: 9,
   USDC_DECIMALS: 6,
 
-  // --- IPFS robust (NEW) ---
-  // Hinweis: Die echten Medienpfade nehmen wir aus den Metadaten (animation_url/image).
-  // Diese Gateways werden nacheinander probiert; plus optional Worker-Proxy.
+  API_BASE: "https://api.inpinity.online/game",
+
+  // --- IPFS ---
+  // Wichtig: wieder drin, sonst "undefined/<id>.json"!
+  PINATA_CID: "bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu",
   GATEWAYS: [
     "https://nftstorage.link/ipfs/",
     "https://dweb.link/ipfs/",
@@ -40,18 +43,17 @@ const CFG = {
     "https://ipfs.io/ipfs/",
     "https://gateway.pinata.cloud/ipfs/"
   ],
-  // Optional: Proxy über deinen Worker (CORS-frei). Im Worker Route /ipfs/:cid/:path* spiegeln.
-  // Beispiel: "https://api.inpinity.online/game/ipfs/"
-  IPFS_PROXY_PREFIX: "https://api.inpinity.online/game/ipfs/", // falls nicht vorhanden: Worker später ergänzen
+  // Optional: eigener Proxy im Worker, liefert CORS-Header
+  IPFS_PROXY_PREFIX: "https://api.inpinity.online/game/ipfs/", // kannst du später deaktivieren/ändern
   IPFS_TIMEOUT_MS: 5000,
 
-  // --- Metadaten-Quelle (Rarity JSON) ---
+  // Rarity JSON
   RARITY_URL: "https://inpinity.online/game/data/pi_phi_table.json",
 
-  // --- Helius (Owner/Asset Lookup) (NEW) ---
-  HELIUS_API_KEY: "d95932bb-5385-4d84-ad18-7fc66e014d58", // <— hier deinen Key eintragen (oder leer lassen)
-  COLLECTION: "6xvwKXMUGfkqhs1f3ZN3KkrdvLh2vF3tX1pqLo9aYPrQ", // Pi Pyramide Collection
-  COLLECTION_NAME_PREFIX: "Pi Pyramide #", // Name-Muster für Suche
+  // --- Helius DAS (Owner/Asset Lookup) ---
+  HELIUS_API_KEY: "d95932bb-5385-4d84-ad18-7fc66e014d58", // <-- Key hier setzen (oder leer lassen, dann wird Owner nicht abgefragt)
+  COLLECTION: "6xvwKXMUGfkqhs1f3ZN3KkrdvLh2vF3tX1pqLo9aYPrQ",
+  COLLECTION_NAME_PREFIX: "Pi Pyramide #", // Name exakt wie gemintet
 };
 
 /* ------------------ SHA-256 via WebCrypto ------------------ */
@@ -90,8 +92,8 @@ const thumbBar      = $("#thumbBar");
 const pageInfo      = $("#pageInfo");
 const prevPage      = $("#prevPage");
 const nextPage      = $("#nextPage");
-const rarityListEl  = $("#rarityList");   // optional <ul id="rarityList"></ul>
-const ownerLineEl   = $("#ownerLine");    // optional <div id="ownerLine"></div>
+const rarityListEl  = $("#rarityList");   // optional: <ul id="rarityList"></ul>
+const ownerLineEl   = $("#ownerLine");    // optional: <div id="ownerLine"></div>
 
 // Kostenanzeige
 if (spanCost) spanCost.textContent = Number(CFG.COST_USDC).toFixed(2);
@@ -100,7 +102,7 @@ let wallet = null;
 let connection = null;
 let lastSig = null;
 
-// Frontend-Cache
+// Caches
 const META_CACHE = new Map();  // id -> json
 const THUMB_CACHE = new Map(); // id -> url
 const RARITY_CACHE = { loaded: false, byId: new Map(), counts: null };
@@ -110,7 +112,7 @@ function pickRpc(){ return CFG.RPCS[Math.floor(Math.random()*CFG.RPCS.length)]; 
 async function ensureConn(){ return connection ?? (connection = new Connection(pickRpc(), "confirmed")); }
 async function getAta(mint, owner){ return await getAssociatedTokenAddress(new PublicKey(mint), new PublicKey(owner), false); }
 
-/* --- Token-Balance: Summiere alle Accounts (NEW) --- */
+/* --- Token-Balance: Summe aller Accounts (zeigt USDC sicher an) --- */
 async function fetchTokenBalanceSum(mint, owner, decimals) {
   const conn = await ensureConn();
   const resp = await conn.getParsedTokenAccountsByOwner(new PublicKey(owner), { mint: new PublicKey(mint) }).catch(()=>null);
@@ -241,14 +243,12 @@ async function callPlayAPI({txSig=null, mode="PAID"}) {
 }
 
 /* ------------------ IPFS Utils (robust) ------------------ */
-// NEW: baue vollständige URL-Liste (inkl. optionaler Proxy) für ipfs://CID/path oder rohen CID/Pfad
 function ipfsCandidateUrls(ipfsPathOrHttp) {
   if (!ipfsPathOrHttp) return [];
   if (ipfsPathOrHttp.startsWith("http")) return [ipfsPathOrHttp];
 
   let path = ipfsPathOrHttp;
-  if (path.startsWith("ipfs://")) path = path.slice(7); // CID/... 
-
+  if (path.startsWith("ipfs://")) path = path.slice(7); // CID/...
   const urls = [];
   // Proxy zuerst (CORS-frei), wenn konfiguriert
   if (CFG.IPFS_PROXY_PREFIX) urls.push(CFG.IPFS_PROXY_PREFIX + path);
@@ -256,10 +256,7 @@ function ipfsCandidateUrls(ipfsPathOrHttp) {
   for (const gw of CFG.GATEWAYS) urls.push(gw + path);
   return urls;
 }
-
 function timeout(ms) { return new Promise((_, rej) => setTimeout(()=>rej(new Error("timeout")), ms)); }
-
-// JSON holen mit konsequentem Fallback (ohne HEAD)
 async function fetchJsonRobust(ipfsPathOrHttp) {
   const urls = ipfsCandidateUrls(ipfsPathOrHttp);
   let lastErr = null;
@@ -272,8 +269,6 @@ async function fetchJsonRobust(ipfsPathOrHttp) {
   }
   throw lastErr ?? new Error("IPFS JSON nicht erreichbar");
 }
-
-// Media anzeigen: wir setzen src direkt und lauschen onerror → Fallback
 function setMediaWithFallback(el, ipfsPathOrHttp, isVideo=false, posterIpfs=null) {
   const urls = ipfsCandidateUrls(ipfsPathOrHttp);
   let idx = 0;
@@ -288,8 +283,7 @@ function setMediaWithFallback(el, ipfsPathOrHttp, isVideo=false, posterIpfs=null
       }
       el.onerror = tryNext;
       el.onloadeddata = () => { el.style.display="block"; };
-      // Autoplay may fail silently; that’s okay.
-      el.play().catch(()=>{});
+      el.play?.().catch(()=>{});
     } else {
       el.src = url;
       el.onerror = tryNext;
@@ -322,26 +316,32 @@ async function loadRarityIfNeeded() {
   } catch {}
 }
 
-/* ------------------ Helius Owner Lookup (optional) ------------------ */
-// Suche Asset über Collection + Name "Pi Pyramide #<id>"
+/* ------------------ Helius Owner Lookup (JSON-RPC, korrekt) ------------------ */
+// Docs: POST https://mainnet.helius-rpc.com/?api-key=KEY  body:{ jsonrpc:"2.0", method:"searchAssets", params:{...}}
 async function heliusSearchAssetById(id) {
   if (!CFG.HELIUS_API_KEY) return null;
-  const url = `https://api.helius.xyz/v1/search-assets?api-key=${CFG.HELIUS_API_KEY}`;
+  const url = `https://mainnet.helius-rpc.com/?api-key=${CFG.HELIUS_API_KEY}`;
   const body = {
-    conditionType: "all",
-    conditions: [
-      { field: "group_key", operator: "=", value: "collection" },
-      { field: "group_value", operator: "=", value: CFG.COLLECTION },
-      { field: "name", operator: "=", value: CFG.COLLECTION_NAME_PREFIX + id }
-    ],
-    limit: 1,
-    page: 1
+    jsonrpc: "2.0",
+    id: "search-by-name",
+    method: "searchAssets",
+    params: {
+      // Name exakt matchen:
+      name: CFG.COLLECTION_NAME_PREFIX + id,
+      // zusätzlich über Collection absichern:
+      groupKey: "collection",
+      groupValue: CFG.COLLECTION,
+      // wir wollen 1 Ergebnis
+      page: 1,
+      limit: 1
+    }
   };
   try {
     const res = await fetch(url, { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify(body) });
     if (!res.ok) return null;
     const data = await res.json();
-    return (data?.result?.length ? data.result[0] : null);
+    const items = data?.result?.items ?? data?.assets?.items ?? [];
+    return items.length ? items[0] : null;
   } catch { return null; }
 }
 
@@ -358,12 +358,12 @@ if (pixelateEl) pixelateEl.onchange = () => setPixelate(pixelateEl.checked);
 async function fetchMetadata(id) {
   if (META_CACHE.has(id)) return META_CACHE.get(id);
 
-  // 1) Wenn Helius da ist → on-chain URI nehmen (robuster als starre CID)
+  // 1) Versuch: Helius → on-chain json_uri (robuster)
   let jsonUri = null;
   const asset = await heliusSearchAssetById(id);
   if (asset?.content?.json_uri) jsonUri = asset.content.json_uri;
 
-  // 2) Fallback: alte feste Pinata-Struktur (nur falls jsonUri fehlt)
+  // 2) Fallback: starre Pinata-Struktur
   if (!jsonUri) jsonUri = `ipfs://${CFG.PINATA_CID}/${id}.json`;
 
   const meta = await fetchJsonRobust(jsonUri);
@@ -375,7 +375,7 @@ async function renderOwnerLine(id) {
   if (!ownerLineEl) return;
   ownerLineEl.textContent = "Owner: –";
   const asset = await heliusSearchAssetById(id);
-  if (!asset) { ownerLineEl.textContent = "Owner: (unbekannt / ohne Helius)"; return; }
+  if (!asset) { ownerLineEl.textContent = "Owner: (unbekannt / Helius aus)"; return; }
   const owner = asset?.ownership?.owner ?? asset?.authorities?.[0]?.address ?? "(n/a)";
   ownerLineEl.textContent = `Owner: ${owner}`;
 }
@@ -391,8 +391,7 @@ async function renderNFTById(id) {
     const anim = meta.animation_url;
     const img  = meta.image;
 
-    // Medien laden (ohne HEAD, mit Fallbackkette)
-    if (anim && (anim.endsWith(".mp4") || anim.includes(".mp4") || anim.startsWith("ipfs://"))) {
+    if (anim && (anim.endsWith(".mp4") || anim.includes(".mp4") || anim.startsWith("ipfs://") || anim.startsWith("http"))) {
       setMediaWithFallback(nftVideo, anim, true, img || null);
       setGridOverlay(grid16El?.checked); setPixelate(pixelateEl?.checked);
     } else if (img) {
@@ -409,7 +408,6 @@ async function renderNFTById(id) {
 
     metaBox.textContent = JSON.stringify({ id, name, has_video: !!anim, rarity: rarityShort }, null, 2);
 
-    // Owner anzeigen (wenn Helius-Key gesetzt)
     if (CFG.HELIUS_API_KEY) renderOwnerLine(id);
   } catch (e) {
     metaBox.textContent = "Fehler beim Laden: " + (e?.message || String(e));
@@ -454,14 +452,12 @@ function thumbEl(id) {
   div.onclick = () => { manualIdInput.value = id; renderNFTById(id); };
   return { div, img };
 }
-
 async function loadThumb(id) {
   if (THUMB_CACHE.has(id)) return THUMB_CACHE.get(id);
   try {
     const meta = await fetchMetadata(id);
     let url = "";
     if (meta.image) {
-      // Bild-URL direkt aus Metadaten (mit Gateway/Proxy-Fallback)
       const candidates = ipfsCandidateUrls(meta.image);
       url = candidates[0];
     }
@@ -469,7 +465,6 @@ async function loadThumb(id) {
     return url;
   } catch { THUMB_CACHE.set(id, ""); return ""; }
 }
-
 async function renderThumbPage(p) {
   clearThumbs();
   const { start, end } = pageRange(p);
@@ -502,7 +497,7 @@ if (btnPlay) {
       const pay = document.querySelector('input[name="pay"]:checked')?.value || "INPI";
       const tx = (pay === "INPI") ? await buildInpiTx(wallet.publicKey) : await buildUsdcTx(wallet.publicKey);
       const sig = await window.solana.signAndSendTransaction(tx);
-      const sigStr = sig.signature || sig; // Phantom liefert obj mit .signature
+      const sigStr = sig.signature || sig;
 
       lastSig = sigStr;
 
@@ -520,16 +515,10 @@ if (btnPlay) {
       a.textContent = "Transaktion im Solana Explorer öffnen";
       linksEl.appendChild(a);
 
-      // 3D-Animation deterministisch (Seed via WebCrypto)
+      // 3D-Animation deterministisch
       const seedInput = wallet.publicKey.toBase58() + (lastSig || "FREE") + (apiResp?.proof?.blockhash || "");
       const fullSeed = await sha256Hex(seedInput);
-      runPiRoll({
-        seed: fullSeed,
-        rows: 400,
-        visibleRows: 400,
-        won: !!apiResp?.result?.won,
-        pickedId: apiResp?.result?.id ?? null
-      });
+      runPiRoll({ seed: fullSeed, rows: 400, visibleRows: 400, won: !!apiResp?.result?.won, pickedId: apiResp?.result?.id ?? null });
 
       // Auto-Preview
       if (autoPreviewEl?.checked && apiResp?.result?.won && Number.isInteger(apiResp.result.id)) {

@@ -1,5 +1,6 @@
 // Frontend mit Phantom, API, Boost-Countdown, Explorer-Link,
-// NFT-Preview (Pinata) + Thumbs mit Pager (0–399) + Pixelate
+// NFT-Preview (IPFS robust) + Thumbs mit Pager (0–399) + Pixelate
+// Owner-Check via Helius (optional) + Rarity-Liste (optional)
 
 import { runPiRoll } from "./three-scene.js?v=1";
 
@@ -29,14 +30,28 @@ const CFG = {
   INPI_DECIMALS: 9,
   USDC_DECIMALS: 6,
 
-  // Pinata / IPFS (0–399 JSON: image + animation_url=mp4)
-  PINATA_CID: "bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu",
+  // --- IPFS robust (NEW) ---
+  // Hinweis: Die echten Medienpfade nehmen wir aus den Metadaten (animation_url/image).
+  // Diese Gateways werden nacheinander probiert; plus optional Worker-Proxy.
   GATEWAYS: [
-    "https://gateway.pinata.cloud/ipfs/",
+    "https://nftstorage.link/ipfs/",
+    "https://dweb.link/ipfs/",
     "https://cloudflare-ipfs.com/ipfs/",
-    "https://ipfs.io/ipfs/"
+    "https://ipfs.io/ipfs/",
+    "https://gateway.pinata.cloud/ipfs/"
   ],
-  IPFS_TIMEOUT_MS: 4500
+  // Optional: Proxy über deinen Worker (CORS-frei). Im Worker Route /ipfs/:cid/:path* spiegeln.
+  // Beispiel: "https://api.inpinity.online/game/ipfs/"
+  IPFS_PROXY_PREFIX: "https://api.inpinity.online/game/ipfs/", // falls nicht vorhanden: Worker später ergänzen
+  IPFS_TIMEOUT_MS: 5000,
+
+  // --- Metadaten-Quelle (Rarity JSON) ---
+  RARITY_URL: "https://inpinity.online/game/data/pi_phi_table.json",
+
+  // --- Helius (Owner/Asset Lookup) (NEW) ---
+  HELIUS_API_KEY: "d95932bb-5385-4d84-ad18-7fc66e014d58", // <— hier deinen Key eintragen (oder leer lassen)
+  COLLECTION: "6xvwKXMUGfkqhs1f3ZN3KkrdvLh2vF3tX1pqLo9aYPrQ", // Pi Pyramide Collection
+  COLLECTION_NAME_PREFIX: "Pi Pyramide #", // Name-Muster für Suche
 };
 
 /* ------------------ SHA-256 via WebCrypto ------------------ */
@@ -75,6 +90,8 @@ const thumbBar      = $("#thumbBar");
 const pageInfo      = $("#pageInfo");
 const prevPage      = $("#prevPage");
 const nextPage      = $("#nextPage");
+const rarityListEl  = $("#rarityList");   // optional <ul id="rarityList"></ul>
+const ownerLineEl   = $("#ownerLine");    // optional <div id="ownerLine"></div>
 
 // Kostenanzeige
 if (spanCost) spanCost.textContent = Number(CFG.COST_USDC).toFixed(2);
@@ -83,28 +100,34 @@ let wallet = null;
 let connection = null;
 let lastSig = null;
 
-// kleines Frontend-Cache
+// Frontend-Cache
 const META_CACHE = new Map();  // id -> json
 const THUMB_CACHE = new Map(); // id -> url
+const RARITY_CACHE = { loaded: false, byId: new Map(), counts: null };
 
 /* ------------------ Helpers ------------------ */
 function pickRpc(){ return CFG.RPCS[Math.floor(Math.random()*CFG.RPCS.length)]; }
 async function ensureConn(){ return connection ?? (connection = new Connection(pickRpc(), "confirmed")); }
 async function getAta(mint, owner){ return await getAssociatedTokenAddress(new PublicKey(mint), new PublicKey(owner), false); }
 
-async function fetchTokenBalance(mint, owner, decimals) {
+/* --- Token-Balance: Summiere alle Accounts (NEW) --- */
+async function fetchTokenBalanceSum(mint, owner, decimals) {
   const conn = await ensureConn();
-  const ata = await getAta(mint, owner);
-  const info = await conn.getTokenAccountBalance(ata).catch(()=>null);
-  const raw = info?.value?.amount ? BigInt(info.value.amount) : 0n;
-  return { raw, ui: Number(raw) / 10**decimals };
+  const resp = await conn.getParsedTokenAccountsByOwner(new PublicKey(owner), { mint: new PublicKey(mint) }).catch(()=>null);
+  if (!resp?.value?.length) return { raw: 0n, ui: 0 };
+  let total = 0n;
+  for (const it of resp.value) {
+    const amt = it.account?.data?.parsed?.info?.tokenAmount?.amount ?? "0";
+    try { total += BigInt(amt); } catch {}
+  }
+  return { raw: total, ui: Number(total) / 10**decimals };
 }
 
 async function refreshBalances() {
   if (!wallet) return;
   const [inpi, usdc] = await Promise.all([
-    fetchTokenBalance(CFG.INPI_MINT, wallet.publicKey, CFG.INPI_DECIMALS),
-    fetchTokenBalance(CFG.USDC_MINT, wallet.publicKey, CFG.USDC_DECIMALS),
+    fetchTokenBalanceSum(CFG.INPI_MINT, wallet.publicKey, CFG.INPI_DECIMALS),
+    fetchTokenBalanceSum(CFG.USDC_MINT, wallet.publicKey, CFG.USDC_DECIMALS),
   ]);
   if (spanInpi) spanInpi.textContent = inpi.ui.toFixed(4);
   if (spanUsdc) spanUsdc.textContent = usdc.ui.toFixed(4);
@@ -217,27 +240,109 @@ async function callPlayAPI({txSig=null, mode="PAID"}) {
   return await res.json();
 }
 
-/* ------------------ IPFS Utils ------------------ */
-function toGatewayUrls(path) {
-  const p = path.startsWith("http") ? path : (path.startsWith("ipfs://") ? path.replace("ipfs://","") : path);
-  return p.startsWith("http") ? [p] : CFG.GATEWAYS.map(gw => gw + p);
+/* ------------------ IPFS Utils (robust) ------------------ */
+// NEW: baue vollständige URL-Liste (inkl. optionaler Proxy) für ipfs://CID/path oder rohen CID/Pfad
+function ipfsCandidateUrls(ipfsPathOrHttp) {
+  if (!ipfsPathOrHttp) return [];
+  if (ipfsPathOrHttp.startsWith("http")) return [ipfsPathOrHttp];
+
+  let path = ipfsPathOrHttp;
+  if (path.startsWith("ipfs://")) path = path.slice(7); // CID/... 
+
+  const urls = [];
+  // Proxy zuerst (CORS-frei), wenn konfiguriert
+  if (CFG.IPFS_PROXY_PREFIX) urls.push(CFG.IPFS_PROXY_PREFIX + path);
+  // Dann Gateways
+  for (const gw of CFG.GATEWAYS) urls.push(gw + path);
+  return urls;
 }
+
 function timeout(ms) { return new Promise((_, rej) => setTimeout(()=>rej(new Error("timeout")), ms)); }
-async function fetchJsonWithFallbacks(path) {
-  const urls = toGatewayUrls(path);
+
+// JSON holen mit konsequentem Fallback (ohne HEAD)
+async function fetchJsonRobust(ipfsPathOrHttp) {
+  const urls = ipfsCandidateUrls(ipfsPathOrHttp);
+  let lastErr = null;
   for (const u of urls) {
     try {
-      const res = await Promise.race([fetch(u, {cache:"no-store"}), timeout(CFG.IPFS_TIMEOUT_MS)]);
+      const res = await Promise.race([fetch(u, { cache:"no-store" }), timeout(CFG.IPFS_TIMEOUT_MS)]);
       if (res.ok) return await res.json();
-    } catch {}
+      lastErr = new Error(`HTTP ${res.status}`);
+    } catch (e) { lastErr = e; }
   }
-  throw new Error("IPFS JSON nicht erreichbar");
+  throw lastErr ?? new Error("IPFS JSON nicht erreichbar");
 }
-async function headOk(url) {
+
+// Media anzeigen: wir setzen src direkt und lauschen onerror → Fallback
+function setMediaWithFallback(el, ipfsPathOrHttp, isVideo=false, posterIpfs=null) {
+  const urls = ipfsCandidateUrls(ipfsPathOrHttp);
+  let idx = 0;
+  const tryNext = () => {
+    if (idx >= urls.length) { el.removeAttribute("src"); el.style.display="none"; return; }
+    const url = urls[idx++];
+    if (isVideo) {
+      el.src = url;
+      if (posterIpfs) {
+        const posters = ipfsCandidateUrls(posterIpfs);
+        el.poster = posters[0];
+      }
+      el.onerror = tryNext;
+      el.onloadeddata = () => { el.style.display="block"; };
+      // Autoplay may fail silently; that’s okay.
+      el.play().catch(()=>{});
+    } else {
+      el.src = url;
+      el.onerror = tryNext;
+      el.onload = () => { el.style.display="block"; };
+    }
+  };
+  tryNext();
+}
+
+/* ------------------ Rarity (optional Anzeige) ------------------ */
+async function loadRarityIfNeeded() {
+  if (RARITY_CACHE.loaded) return;
   try {
-    const res = await Promise.race([fetch(url, { method:"HEAD" }), timeout(2500)]);
-    return res.ok;
-  } catch { return false; }
+    const j = await fetch(CFG.RARITY_URL, { cache:"no-store" }).then(r=>r.json());
+    let counts = { Legendary:0, Epic:0, Rare:0, Common:0 };
+    for (const o of j) {
+      RARITY_CACHE.byId.set(o.id, o);
+      counts[o.tier] = (counts[o.tier]||0)+1;
+    }
+    RARITY_CACHE.counts = counts;
+    RARITY_CACHE.loaded = true;
+    if (rarityListEl) {
+      rarityListEl.innerHTML = "";
+      for (const tier of ["Legendary","Epic","Rare","Common"]) {
+        const li = document.createElement("li");
+        li.textContent = `${tier}: ${counts[tier] ?? 0}`;
+        rarityListEl.appendChild(li);
+      }
+    }
+  } catch {}
+}
+
+/* ------------------ Helius Owner Lookup (optional) ------------------ */
+// Suche Asset über Collection + Name "Pi Pyramide #<id>"
+async function heliusSearchAssetById(id) {
+  if (!CFG.HELIUS_API_KEY) return null;
+  const url = `https://api.helius.xyz/v1/search-assets?api-key=${CFG.HELIUS_API_KEY}`;
+  const body = {
+    conditionType: "all",
+    conditions: [
+      { field: "group_key", operator: "=", value: "collection" },
+      { field: "group_value", operator: "=", value: CFG.COLLECTION },
+      { field: "name", operator: "=", value: CFG.COLLECTION_NAME_PREFIX + id }
+    ],
+    limit: 1,
+    page: 1
+  };
+  try {
+    const res = await fetch(url, { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify(body) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return (data?.result?.length ? data.result[0] : null);
+  } catch { return null; }
 }
 
 /* ------------------ NFT Preview ------------------ */
@@ -252,12 +357,32 @@ if (pixelateEl) pixelateEl.onchange = () => setPixelate(pixelateEl.checked);
 
 async function fetchMetadata(id) {
   if (META_CACHE.has(id)) return META_CACHE.get(id);
-  const meta = await fetchJsonWithFallbacks(`${CFG.PINATA_CID}/${id}.json`);
+
+  // 1) Wenn Helius da ist → on-chain URI nehmen (robuster als starre CID)
+  let jsonUri = null;
+  const asset = await heliusSearchAssetById(id);
+  if (asset?.content?.json_uri) jsonUri = asset.content.json_uri;
+
+  // 2) Fallback: alte feste Pinata-Struktur (nur falls jsonUri fehlt)
+  if (!jsonUri) jsonUri = `ipfs://${CFG.PINATA_CID}/${id}.json`;
+
+  const meta = await fetchJsonRobust(jsonUri);
   META_CACHE.set(id, meta);
   return meta;
 }
 
+async function renderOwnerLine(id) {
+  if (!ownerLineEl) return;
+  ownerLineEl.textContent = "Owner: –";
+  const asset = await heliusSearchAssetById(id);
+  if (!asset) { ownerLineEl.textContent = "Owner: (unbekannt / ohne Helius)"; return; }
+  const owner = asset?.ownership?.owner ?? asset?.authorities?.[0]?.address ?? "(n/a)";
+  ownerLineEl.textContent = `Owner: ${owner}`;
+}
+
 async function renderNFTById(id) {
+  await loadRarityIfNeeded();
+
   hideMedia();
   metaBox.textContent = "Lade Metadaten…";
   try {
@@ -266,28 +391,26 @@ async function renderNFTById(id) {
     const anim = meta.animation_url;
     const img  = meta.image;
 
-    if (anim && (anim.endsWith(".mp4") || anim.includes(".mp4"))) {
-      const candidates = toGatewayUrls(anim.startsWith("ipfs://") ? anim.replace("ipfs://","") : anim);
-      let chosen = null;
-      for (const u of candidates) { if (await headOk(u)) { chosen = u; break; } }
-      nftVideo.src = chosen || candidates[0];
-      if (img) {
-        const p = img.startsWith("ipfs://") ? img.replace("ipfs://","") : img;
-        nftVideo.poster = toGatewayUrls(p)[0];
-      }
-      nftVideo.style.display = "block";
+    // Medien laden (ohne HEAD, mit Fallbackkette)
+    if (anim && (anim.endsWith(".mp4") || anim.includes(".mp4") || anim.startsWith("ipfs://"))) {
+      setMediaWithFallback(nftVideo, anim, true, img || null);
       setGridOverlay(grid16El?.checked); setPixelate(pixelateEl?.checked);
-      await nftVideo.play().catch(()=>{});
     } else if (img) {
-      const p = img.startsWith("ipfs://") ? img.replace("ipfs://","") : img;
-      nftImage.src = toGatewayUrls(p)[0];
-      nftImage.style.display = "block";
+      setMediaWithFallback(nftImage, img, false, null);
       setGridOverlay(grid16El?.checked); setPixelate(pixelateEl?.checked);
     } else {
-      metaBox.textContent = "Keine Medienfelder gefunden."; return;
+      metaBox.textContent = "Keine Medienfelder gefunden.";
+      return;
     }
 
-    metaBox.textContent = JSON.stringify({ id, name, has_video: !!anim }, null, 2);
+    // Rarity (falls vorhanden)
+    const r = RARITY_CACHE.byId.get(id);
+    const rarityShort = r ? { tier:r.tier, axis:r.is_axis, pair:r.is_in_matching_pair, pi_eq_phi:r.pi_equals_phi } : null;
+
+    metaBox.textContent = JSON.stringify({ id, name, has_video: !!anim, rarity: rarityShort }, null, 2);
+
+    // Owner anzeigen (wenn Helius-Key gesetzt)
+    if (CFG.HELIUS_API_KEY) renderOwnerLine(id);
   } catch (e) {
     metaBox.textContent = "Fehler beim Laden: " + (e?.message || String(e));
     hideMedia();
@@ -311,7 +434,7 @@ if (btnRandom) {
   };
 }
 
-// Thumbs + Pager 0..399 (4 Seiten à 100)
+/* ------------------ Thumbs + Pager 0..399 (4 Seiten à 100) ------------------ */
 let currentPage = 0;               // 0..3
 const PAGE_SIZE = 100;
 const MAX_ID = 399;
@@ -331,19 +454,22 @@ function thumbEl(id) {
   div.onclick = () => { manualIdInput.value = id; renderNFTById(id); };
   return { div, img };
 }
+
 async function loadThumb(id) {
   if (THUMB_CACHE.has(id)) return THUMB_CACHE.get(id);
   try {
     const meta = await fetchMetadata(id);
     let url = "";
     if (meta.image) {
-      const p = meta.image.startsWith("ipfs://") ? meta.image.replace("ipfs://","") : meta.image;
-      url = toGatewayUrls(p)[0];
+      // Bild-URL direkt aus Metadaten (mit Gateway/Proxy-Fallback)
+      const candidates = ipfsCandidateUrls(meta.image);
+      url = candidates[0];
     }
     THUMB_CACHE.set(id, url);
     return url;
   } catch { THUMB_CACHE.set(id, ""); return ""; }
 }
+
 async function renderThumbPage(p) {
   clearThumbs();
   const { start, end } = pageRange(p);

@@ -1,29 +1,33 @@
 // Frontend mit Phantom, API, Boost-Countdown, Explorer-Link,
-// NFT-Preview (IPFS robust) + Thumbs mit Pager (0–399) + Pixelate
-// Owner-Check via Helius (optional) + Rarity-Liste (optional)
+// NFT-Preview (robustes IPFS) + Thumbs (0–399) + Pixelate
+// Helius Owner-Check optional, USDC-Balance-Fix, RPC-Fallback, Burn-Fix
 
 import { runPiRoll } from "./three-scene.js?v=1";
 
-/* ------------------ Solana libs (ESM!) ------------------ */
-// web3.js als ESM (kein IIFE mehr) – fix für "Connection is not a constructor"
+/* ---------- Solana libs (ESM) ---------- */
 import {
   Connection, PublicKey, Transaction
 } from "https://esm.sh/@solana/web3.js@1.95.3?bundle&target=es2020";
-// spl-token als ESM (kein IIFE verfügbar)
 import {
   getAssociatedTokenAddress,
   createAssociatedTokenAccountInstruction,
   createTransferCheckedInstruction
 } from "https://esm.sh/@solana/spl-token@0.4.8?bundle&target=es2020";
 
-/* ------------------ Config ------------------ */
+/* ---------- Config ---------- */
 const CFG = {
-  RPCS: ["https://api.mainnet-beta.solana.com"],
+  // RPCs: 1) Helius (falls KEY gesetzt) 2) Fallbacks (öffentliche Provider optional)
+  HELIUS_API_KEY: "", // <— trage deinen Helius Key ein; leer = kein Helius
+  RPCS: [
+    // wird zur Laufzeit um Helius ergänzt, wenn KEY gesetzt
+    "https://api.mainnet-beta.solana.com" // kann 403 geben → wir rotieren
+  ],
 
   INPI_MINT: "GBfEVjkSn3KSmRnqe83Kb8c42DsxkJmiDCb4AbNYBYt1",
   USDC_MINT: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+
   TREASURY_OWNER: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp", // INPI 80%
-  INCINERATOR_OWNER: "1nc1nerator11111111111111111111111111111111",  // INPI 20% Burn
+  INCINERATOR_OWNER: "1nc1nerator11111111111111111111111111111111",  // INPI 20% Burn (owner off-curve!)
   LP_OWNER: "GEFoNLncuhh4nH99GKvVEUxe59SGe74dbLG7UUtfHrCp",          // USDC → LP
 
   COST_INPI: 2000,
@@ -33,8 +37,7 @@ const CFG = {
 
   API_BASE: "https://api.inpinity.online/game",
 
-  // --- IPFS ---
-  // Wichtig: wieder drin, sonst "undefined/<id>.json"!
+  // IPFS: **Proxy deaktiviert** bis die Worker-Route existiert. Nur Gateways nutzen.
   PINATA_CID: "bafybeibjqtwncnrsv4vtcnrqcck3bgecu3pfip7mwu4pcdenre5b7am7tu",
   GATEWAYS: [
     "https://nftstorage.link/ipfs/",
@@ -43,27 +46,30 @@ const CFG = {
     "https://ipfs.io/ipfs/",
     "https://gateway.pinata.cloud/ipfs/"
   ],
-  // Optional: eigener Proxy im Worker, liefert CORS-Header
-  IPFS_PROXY_PREFIX: "https://api.inpinity.online/game/ipfs/", // kannst du später deaktivieren/ändern
+  IPFS_PROXY_PREFIX: "", // war: "https://api.inpinity.online/game/ipfs/" → erstmal leer lassen
   IPFS_TIMEOUT_MS: 5000,
 
   // Rarity JSON
   RARITY_URL: "https://inpinity.online/game/data/pi_phi_table.json",
 
-  // --- Helius DAS (Owner/Asset Lookup) ---
-  HELIUS_API_KEY: "d95932bb-5385-4d84-ad18-7fc66e014d58", // <-- Key hier setzen (oder leer lassen, dann wird Owner nicht abgefragt)
+  // Helius DAS (Owner/Asset Lookup)
   COLLECTION: "6xvwKXMUGfkqhs1f3ZN3KkrdvLh2vF3tX1pqLo9aYPrQ",
-  COLLECTION_NAME_PREFIX: "Pi Pyramide #", // Name exakt wie gemintet
+  COLLECTION_NAME_PREFIX: "Pi Pyramide #"
 };
 
-/* ------------------ SHA-256 via WebCrypto ------------------ */
+// Helius RPC als bevorzugten Endpoint vorschalten (verhindert 403)
+if (CFG.HELIUS_API_KEY) {
+  CFG.RPCS.unshift(`https://mainnet.helius-rpc.com/?api-key=${CFG.HELIUS_API_KEY}`);
+}
+
+/* ---------- SHA-256 ---------- */
 async function sha256Hex(str){
   const data = new TextEncoder().encode(str);
   const hash = await crypto.subtle.digest("SHA-256", data);
   return Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,"0")).join("");
 }
 
-/* ------------------ DOM ------------------ */
+/* ---------- DOM ---------- */
 const $ = (s)=>document.querySelector(s);
 const btnConnect = $("#btnConnect");
 const btnPlay    = $("#btnPlay");
@@ -76,7 +82,6 @@ const hintEl     = $("#hint");
 const linksEl    = $("#links");
 const boostTimerEl = $("#boostTimer");
 
-// NFT Visual
 const autoPreviewEl = $("#autoPreview");
 const grid16El      = $("#grid16");
 const pixelateEl    = $("#pixelate");
@@ -92,30 +97,57 @@ const thumbBar      = $("#thumbBar");
 const pageInfo      = $("#pageInfo");
 const prevPage      = $("#prevPage");
 const nextPage      = $("#nextPage");
-const rarityListEl  = $("#rarityList");   // optional: <ul id="rarityList"></ul>
-const ownerLineEl   = $("#ownerLine");    // optional: <div id="ownerLine"></div>
+const rarityListEl  = $("#rarityList");
+const ownerLineEl   = $("#ownerLine");
 
-// Kostenanzeige
 if (spanCost) spanCost.textContent = Number(CFG.COST_USDC).toFixed(2);
 
 let wallet = null;
 let connection = null;
 let lastSig = null;
 
-// Caches
-const META_CACHE = new Map();  // id -> json
-const THUMB_CACHE = new Map(); // id -> url
-const RARITY_CACHE = { loaded: false, byId: new Map(), counts: null };
+const META_CACHE = new Map();
+const THUMB_CACHE = new Map();
+const RARITY_CACHE = { loaded:false, byId:new Map(), counts:null };
 
-/* ------------------ Helpers ------------------ */
-function pickRpc(){ return CFG.RPCS[Math.floor(Math.random()*CFG.RPCS.length)]; }
-async function ensureConn(){ return connection ?? (connection = new Connection(pickRpc(), "confirmed")); }
-async function getAta(mint, owner){ return await getAssociatedTokenAddress(new PublicKey(mint), new PublicKey(owner), false); }
+/* ---------- RPC-Rotation + Connection ---------- */
+let rpcIdx = 0;
+function pickRpc(){ rpcIdx = (rpcIdx+1) % CFG.RPCS.length; return CFG.RPCS[rpcIdx]; }
 
-/* --- Token-Balance: Summe aller Accounts (zeigt USDC sicher an) --- */
+async function ensureConn() {
+  if (connection) return connection;
+  // versuche in Reihenfolge, bis einer nicht 403 liefert
+  for (let i=0;i<CFG.RPCS.length;i++){
+    const url = CFG.RPCS[i];
+    try {
+      const conn = new Connection(url, "confirmed");
+      // kleine Probe: getEpochInfo
+      await conn.getEpochInfo(); // kann 403 werfen
+      connection = conn;
+      return connection;
+    } catch (e) {
+      // weiter zum nächsten RPC
+    }
+  }
+  // letzter Versuch: aktueller pick
+  connection = new Connection(pickRpc(), "confirmed");
+  return connection;
+}
+
+/* ---------- Token-Balances (summiert alle Accounts) ---------- */
 async function fetchTokenBalanceSum(mint, owner, decimals) {
-  const conn = await ensureConn();
-  const resp = await conn.getParsedTokenAccountsByOwner(new PublicKey(owner), { mint: new PublicKey(mint) }).catch(()=>null);
+  const tryRPC = async () => {
+    const conn = await ensureConn();
+    return await conn.getParsedTokenAccountsByOwner(new PublicKey(owner), { mint: new PublicKey(mint) });
+  };
+  let resp = null;
+  try {
+    resp = await tryRPC();
+  } catch (e) {
+    // 403/Netz → auf nächsten RPC wechseln & retry
+    connection = null;
+    resp = await tryRPC().catch(()=>null);
+  }
   if (!resp?.value?.length) return { raw: 0n, ui: 0 };
   let total = 0n;
   for (const it of resp.value) {
@@ -135,7 +167,7 @@ async function refreshBalances() {
   if (spanUsdc) spanUsdc.textContent = usdc.ui.toFixed(4);
 }
 
-/* ------------------ Europe/Berlin Boost ------------------ */
+/* ---------- Boost (Europe/Berlin) ---------- */
 function nowBerlin() {
   const d = new Date();
   const m = d.getUTCMonth();
@@ -162,73 +194,101 @@ function updateBoostUI() {
 }
 setInterval(updateBoostUI, 1000); updateBoostUI();
 
-/* ------------------ Wallet ------------------ */
+/* ---------- Wallet ---------- */
 if (btnConnect) {
   btnConnect.onclick = async () => {
     if (!window?.solana?.isPhantom) return alert("Phantom Wallet nicht gefunden. Bitte Phantom installieren.");
     const resp = await window.solana.connect();
     wallet = resp;
     btnConnect.textContent = `Verbunden: ${wallet.publicKey.toBase58().slice(0,6)}…`;
+    connection = null; // Connection neu aufbauen (falls RPC gewechselt werden muss)
     await ensureConn();
     await refreshBalances();
   };
 }
 
-/* ------------------ Zahlungen ------------------ */
+/* ---------- Helpers ---------- */
+async function getAtaSafe(mint, owner, allowOffCurve=false){
+  return await getAssociatedTokenAddress(new PublicKey(mint), new PublicKey(owner), allowOffCurve);
+}
+
+/* ---------- Zahlungen ---------- */
 async function buildInpiTx(payer) {
-  const conn = await ensureConn();
-  const mint = new PublicKey(CFG.INPI_MINT);
-  const decimals = CFG.INPI_DECIMALS;
-  const amount = BigInt(CFG.COST_INPI * 10**decimals);
-  const amtBurn  = amount * 20n / 100n;
-  const amtTreas = amount - amtBurn;
+  const tryBuild = async () => {
+    const conn = await ensureConn();
+    const mint = new PublicKey(CFG.INPI_MINT);
+    const decimals = CFG.INPI_DECIMALS;
+    const amount = BigInt(CFG.COST_INPI * 10**decimals);
+    const amtBurn  = amount * 20n / 100n;
+    const amtTreas = amount - amtBurn;
 
-  const ix = [];
-  const payerPk = new PublicKey(payer);
-  const treasOwner = new PublicKey(CFG.TREASURY_OWNER);
-  const burnOwner  = new PublicKey(CFG.INCINERATOR_OWNER);
+    const ix = [];
+    const payerPk = new PublicKey(payer);
+    const treasOwner = new PublicKey(CFG.TREASURY_OWNER);
+    const burnOwner  = new PublicKey(CFG.INCINERATOR_OWNER);
 
-  const ataPayer = await getAssociatedTokenAddress(mint, payerPk);
-  const ataTreas = await getAssociatedTokenAddress(mint, treasOwner);
-  const ataBurn  = await getAssociatedTokenAddress(mint, burnOwner);
+    const ataPayer = await getAtaSafe(mint, payerPk);
+    const ataTreas = await getAtaSafe(mint, treasOwner);
+    // !!! off-curve für incinerator:
+    const ataBurn  = await getAtaSafe(mint, burnOwner, true);
 
-  const infos = await conn.getMultipleAccountsInfo([ataTreas, ataBurn]);
-  if (!infos[0]) ix.push(createAssociatedTokenAccountInstruction(payerPk, ataTreas, treasOwner, mint));
-  if (!infos[1]) ix.push(createAssociatedTokenAccountInstruction(payerPk, ataBurn,  burnOwner,  mint));
+    // prüfe Ziel-ATAs, erstelle falls fehlen (treasury + burn)
+    const infos = await conn.getMultipleAccountsInfo([ataTreas, ataBurn]).catch(()=>[null,null]);
+    if (!infos?.[0]) ix.push(createAssociatedTokenAccountInstruction(payerPk, ataTreas, treasOwner, mint));
+    if (!infos?.[1]) ix.push(createAssociatedTokenAccountInstruction(payerPk, ataBurn,  burnOwner,  mint));
 
-  ix.push(createTransferCheckedInstruction(ataPayer, mint, ataBurn,  payerPk, Number(amtBurn),  decimals));
-  ix.push(createTransferCheckedInstruction(ataPayer, mint, ataTreas, payerPk, Number(amtTreas), decimals));
+    ix.push(createTransferCheckedInstruction(ataPayer, mint, ataBurn,  payerPk, Number(amtBurn),  decimals));
+    ix.push(createTransferCheckedInstruction(ataPayer, mint, ataTreas, payerPk, Number(amtTreas), decimals));
 
-  const tx = new Transaction().add(...ix);
-  tx.feePayer = payerPk;
-  tx.recentBlockhash = (await conn.getLatestBlockhash("finalized")).blockhash;
-  return tx;
+    const tx = new Transaction().add(...ix);
+    tx.feePayer = payerPk;
+    tx.recentBlockhash = (await conn.getLatestBlockhash("finalized")).blockhash;
+    return tx;
+  };
+  try {
+    return await tryBuild();
+  } catch (e) {
+    // 403 etc → andere RPC
+    connection = null;
+    return await tryBuild();
+  }
 }
 
 async function buildUsdcTx(payer) {
-  const conn = await ensureConn();
-  const mint = new PublicKey(CFG.USDC_MINT);
-  const decimals = CFG.USDC_DECIMALS;
-  const amount = BigInt(CFG.COST_USDC * 10**decimals); // 1.00 USDC
+  const tryBuild = async () => {
+    const conn = await ensureConn();
+    const mint = new PublicKey(CFG.USDC_MINT);
+    const decimals = CFG.USDC_DECIMALS;
+    const amount = BigInt(CFG.COST_USDC * 10**decimals); // 1.00 USDC
 
-  const ix = [];
-  const payerPk = new PublicKey(payer);
-  const lpOwner = new PublicKey(CFG.LP_OWNER);
+    const ix = [];
+    const payerPk = new PublicKey(payer);
+    const lpOwner = new PublicKey(CFG.LP_OWNER);
 
-  const ataPayer = await getAssociatedTokenAddress(mint, payerPk);
-  const ataLp    = await getAssociatedTokenAddress(mint, lpOwner);
+    const ataPayer = await getAtaSafe(mint, payerPk);
+    const ataLp    = await getAtaSafe(mint, lpOwner);
 
-  const info = await conn.getAccountInfo(ataLp);
-  if (!info) ix.push(createAssociatedTokenAccountInstruction(payerPk, ataLp, lpOwner, mint));
-  ix.push(createTransferCheckedInstruction(ataPayer, mint, ataLp, payerPk, Number(amount), decimals));
+    let info = null;
+    try { info = await conn.getAccountInfo(ataLp); }
+    catch { connection = null; const c2 = await ensureConn(); info = await c2.getAccountInfo(ataLp).catch(()=>null); }
 
-  const tx = new Transaction().add(...ix);
-  tx.feePayer = payerPk;
-  tx.recentBlockhash = (await conn.getLatestBlockhash("finalized")).blockhash;
-  return tx;
+    if (!info) ix.push(createAssociatedTokenAccountInstruction(payerPk, ataLp, lpOwner, mint));
+    ix.push(createTransferCheckedInstruction(ataPayer, mint, ataLp, payerPk, Number(amount), decimals));
+
+    const tx = new Transaction().add(...ix);
+    tx.feePayer = payerPk;
+    tx.recentBlockhash = (await conn.getLatestBlockhash("finalized")).blockhash;
+    return tx;
+  };
+  try {
+    return await tryBuild();
+  } catch (e) {
+    connection = null;
+    return await tryBuild();
+  }
 }
 
-/* ------------------ API ------------------ */
+/* ---------- API ---------- */
 async function callPlayAPI({txSig=null, mode="PAID"}) {
   const res = await fetch(`${CFG.API_BASE}/play`, {
     method: "POST",
@@ -242,17 +302,16 @@ async function callPlayAPI({txSig=null, mode="PAID"}) {
   return await res.json();
 }
 
-/* ------------------ IPFS Utils (robust) ------------------ */
+/* ---------- IPFS Utils (robust, ohne Proxy) ---------- */
 function ipfsCandidateUrls(ipfsPathOrHttp) {
   if (!ipfsPathOrHttp) return [];
   if (ipfsPathOrHttp.startsWith("http")) return [ipfsPathOrHttp];
 
   let path = ipfsPathOrHttp;
   if (path.startsWith("ipfs://")) path = path.slice(7); // CID/...
+
   const urls = [];
-  // Proxy zuerst (CORS-frei), wenn konfiguriert
-  if (CFG.IPFS_PROXY_PREFIX) urls.push(CFG.IPFS_PROXY_PREFIX + path);
-  // Dann Gateways
+  // Proxy deaktiviert – nur Gateways nutzen
   for (const gw of CFG.GATEWAYS) urls.push(gw + path);
   return urls;
 }
@@ -293,7 +352,7 @@ function setMediaWithFallback(el, ipfsPathOrHttp, isVideo=false, posterIpfs=null
   tryNext();
 }
 
-/* ------------------ Rarity (optional Anzeige) ------------------ */
+/* ---------- Rarity ---------- */
 async function loadRarityIfNeeded() {
   if (RARITY_CACHE.loaded) return;
   try {
@@ -316,8 +375,7 @@ async function loadRarityIfNeeded() {
   } catch {}
 }
 
-/* ------------------ Helius Owner Lookup (JSON-RPC, korrekt) ------------------ */
-// Docs: POST https://mainnet.helius-rpc.com/?api-key=KEY  body:{ jsonrpc:"2.0", method:"searchAssets", params:{...}}
+/* ---------- Helius Owner Lookup (JSON-RPC korrekt) ---------- */
 async function heliusSearchAssetById(id) {
   if (!CFG.HELIUS_API_KEY) return null;
   const url = `https://mainnet.helius-rpc.com/?api-key=${CFG.HELIUS_API_KEY}`;
@@ -326,12 +384,9 @@ async function heliusSearchAssetById(id) {
     id: "search-by-name",
     method: "searchAssets",
     params: {
-      // Name exakt matchen:
       name: CFG.COLLECTION_NAME_PREFIX + id,
-      // zusätzlich über Collection absichern:
       groupKey: "collection",
       groupValue: CFG.COLLECTION,
-      // wir wollen 1 Ergebnis
       page: 1,
       limit: 1
     }
@@ -345,7 +400,7 @@ async function heliusSearchAssetById(id) {
   } catch { return null; }
 }
 
-/* ------------------ NFT Preview ------------------ */
+/* ---------- NFT Preview ---------- */
 function hideMedia() {
   nftVideo.pause(); nftVideo.removeAttribute("src"); nftVideo.removeAttribute("poster"); nftVideo.style.display = "none";
   nftImage.removeAttribute("src"); nftImage.style.display = "none";
@@ -358,12 +413,12 @@ if (pixelateEl) pixelateEl.onchange = () => setPixelate(pixelateEl.checked);
 async function fetchMetadata(id) {
   if (META_CACHE.has(id)) return META_CACHE.get(id);
 
-  // 1) Versuch: Helius → on-chain json_uri (robuster)
+  // 1) Helius → json_uri bevorzugt
   let jsonUri = null;
   const asset = await heliusSearchAssetById(id);
   if (asset?.content?.json_uri) jsonUri = asset.content.json_uri;
 
-  // 2) Fallback: starre Pinata-Struktur
+  // 2) Fallback: feste Pinata-Struktur
   if (!jsonUri) jsonUri = `ipfs://${CFG.PINATA_CID}/${id}.json`;
 
   const meta = await fetchJsonRobust(jsonUri);
@@ -402,10 +457,8 @@ async function renderNFTById(id) {
       return;
     }
 
-    // Rarity (falls vorhanden)
     const r = RARITY_CACHE.byId.get(id);
     const rarityShort = r ? { tier:r.tier, axis:r.is_axis, pair:r.is_in_matching_pair, pi_eq_phi:r.pi_equals_phi } : null;
-
     metaBox.textContent = JSON.stringify({ id, name, has_video: !!anim, rarity: rarityShort }, null, 2);
 
     if (CFG.HELIUS_API_KEY) renderOwnerLine(id);
@@ -415,7 +468,7 @@ async function renderNFTById(id) {
   }
 }
 
-// Manuelle Anzeige
+/* ---------- Manuelle/Zufällige Anzeige ---------- */
 if (btnShowId) {
   btnShowId.onclick = async () => {
     const v = Number(manualIdInput.value);
@@ -423,7 +476,6 @@ if (btnShowId) {
     await renderNFTById(v);
   };
 }
-// Zufällige Anzeige
 if (btnRandom) {
   btnRandom.onclick = async () => {
     const v = Math.floor(Math.random()*400);
@@ -432,7 +484,7 @@ if (btnRandom) {
   };
 }
 
-/* ------------------ Thumbs + Pager 0..399 (4 Seiten à 100) ------------------ */
+/* ---------- Thumbs + Pager ---------- */
 let currentPage = 0;               // 0..3
 const PAGE_SIZE = 100;
 const MAX_ID = 399;
@@ -485,7 +537,7 @@ if (prevPage) prevPage.onclick = async () => { currentPage = (currentPage - 1 + 
 if (nextPage) nextPage.onclick = async () => { currentPage = (currentPage + 1) % PAGES; await renderThumbPage(currentPage); };
 renderPageInfo();
 
-/* ------------------ Play ------------------ */
+/* ---------- Play ---------- */
 if (btnPlay) {
   btnPlay.onclick = async () => {
     if (!wallet) return alert("Bitte erst mit Phantom verbinden.");
@@ -506,21 +558,18 @@ if (btnPlay) {
       const apiResp = await callPlayAPI({txSig: sigStr, mode:"PAID"});
 
       resultEl.textContent = JSON.stringify(apiResp.result, null, 2);
-      proofEl.textContent  = JSON.stringify(apiResp.proof,  null, 2);
+      proofEl.textContent  = JSON.stringify(apiResp.proof,  null,  2);
 
-      // Explorer-Link
       const a = document.createElement("a");
       a.href = `https://explorer.solana.com/tx/${sigStr}?cluster=mainnet`;
       a.target = "_blank"; a.rel = "noopener";
       a.textContent = "Transaktion im Solana Explorer öffnen";
       linksEl.appendChild(a);
 
-      // 3D-Animation deterministisch
       const seedInput = wallet.publicKey.toBase58() + (lastSig || "FREE") + (apiResp?.proof?.blockhash || "");
       const fullSeed = await sha256Hex(seedInput);
       runPiRoll({ seed: fullSeed, rows: 400, visibleRows: 400, won: !!apiResp?.result?.won, pickedId: apiResp?.result?.id ?? null });
 
-      // Auto-Preview
       if (autoPreviewEl?.checked && apiResp?.result?.won && Number.isInteger(apiResp.result.id)) {
         await renderNFTById(apiResp.result.id);
       }
